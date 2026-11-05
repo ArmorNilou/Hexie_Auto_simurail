@@ -762,7 +762,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             GlobalStation st = nav.destination;
 
             // 新段：用 Create 给的沿轨长度作为基准（只读一次）
-            if (st != lastLegDest || train.runtime.currentEntry != lastLegEntry || legRemaining < 0) {
+            if (st != lastLegDest || train.runtime.currentEntry != lastLegEntry || legRemaining < 0
+                    || nav.distanceToDestination > legRemaining + 5.0) {   // Create 重新规划且值变大 → 同步（单向，不回写）
                 legRemaining = Math.max(0.0, nav.distanceToDestination);
                 lastLegDest = st;
                 lastLegEntry = train.runtime.currentEntry;
