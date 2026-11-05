@@ -4,7 +4,7 @@ license="MIT"
 
 [[mods]]
 modId="hexietrain"
-version="0.1.0"
+version="0.3.0"
 displayName="Hexie Physics Train"
 description='''
 物理化列车 × Create 铁路运营层

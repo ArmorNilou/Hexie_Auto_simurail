@@ -180,6 +180,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private int missingTicks = 0;
     private int presenceTicks = 0;
     private long lastSendTick = -1;
+    private int lastLeftSig = 0, lastRightSig = 0;   // 红石上升沿检测
+    private int bindGraceTicks = 0;                  // 绑定后宽限，忽略既有红石
+    private int savedEntry = -1;                     // 跨重建保留时刻表游标
     private int diagTicks = 0;
     private GlobalStation dwellingStation = null;   // 停站锁：物理车没走就不再判到站
     private String lastDestName = "";
@@ -466,12 +469,18 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][diag] {}", t.toString()); }
 
             if (!isOwner()) return;   // 非认领者不得驱动
+            try { savedEntry = train.runtime.currentEntry; } catch (Throwable ignored) {}
             int left = leftSignal(), right = rightSignal();
-            boolean redstonePresent = left > 0 || right > 0;
+            boolean rawRedstone = left > 0 || right > 0;
+            // 只在"红石从无到有"时才算玩家接管；绑定后 40 tick 内一律忽略
+            boolean rising = (left > 0 && lastLeftSig == 0) || (right > 0 && lastRightSig == 0);
+            lastLeftSig = left; lastRightSig = right;
+            if (bindGraceTicks > 0) { bindGraceTicks--; rising = false; }
+            boolean redstonePresent = rawRedstone && manualMode;   // 只有已处于手动才走手动驱动
 
             // 玩家给红石 → 单向切手动（要恢复请点 UI 或重设列车）
             if (redstonePresent) {
-                if (!manualMode) setManualMode(true);   // 内部会调 syncTrainPresence：注销虚拟列车、通道归零
+                if (rising && !manualMode) setManualMode(true);   // 仅在上升沿接管
                 double dir = left > 0 ? 1.0 : -1.0;
                 double mag = Math.max(left, right) / 15.0;
                 train.manualTick = true;
@@ -817,6 +826,17 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             HexieTrain.LOGGER.info("[HexieTrain][presence] 建车 ok={} msg={}", result.ok(), result.message());
             if (result.ok()) {
                 bindTrain(result.trainId());
+                bindGraceTicks = 40;
+                // 恢复重建前的游标，避免每次都从第 1 条重来
+                try {
+                    Train nt = Create.RAILWAYS.trains.get(result.trainId());
+                    if (nt != null && savedEntry > 0 && nt.runtime.schedule != null
+                            && savedEntry < nt.runtime.schedule.entries.size()) {
+                        nt.runtime.currentEntry = savedEntry;
+                        nt.runtime.state = com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.PRE_TRANSIT;
+                        HexieTrain.LOGGER.info("[HexieTrain][presence] 恢复时刻表游标 entry={}", savedEntry);
+                    }
+                } catch (Throwable ignored) {}
                 if (SubLevelSuspend.resume(serverLevel, worldPosition)) {
                     TrainBinder.PERSISTENT_LOADS.add(result.trainId());
                 }
@@ -828,9 +848,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     private void syncTrainPresence() {
         if (level == null || level.isClientSide) return;
-        boolean shouldExist = !manualMode
-                && !scheduleSlot.isEmpty()
-                && scheduleSlot.getItem() instanceof com.simibubi.create.content.trains.schedule.ScheduleItem;
+        boolean shouldExist = !scheduleSlot.isEmpty()
+                && scheduleSlot.getItem() instanceof com.simibubi.create.content.trains.schedule.ScheduleItem;   // 手动模式不再拆车，避免时刻表游标被重置
 
         if (!shouldExist) {
             if (boundTrain != null) {
