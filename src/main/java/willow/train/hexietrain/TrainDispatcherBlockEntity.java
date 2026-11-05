@@ -467,7 +467,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][diag] {}", t.toString()); }
 
             if (!isDriver()) return;   // 非认领者不得驱动
-            syncScheduleFromItem(train);   // 物品改了表 → 立刻重新应用
             // POST_TRANSIT 卡死兜底：条件列为空时 tickConditions 永不推进
             try {
                 var rt0 = train.runtime;
@@ -589,8 +588,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      */
     /**
      * 物品里的时刻表若与列车 runtime 里的不一致，就重新应用。
-     *
-     * <p>setSchedule 只在建车时复制一份进列车，之后编辑物品不会自动同步；
      * 这里做差异检测，保证 UI 改了目标站后导航立刻跟着变。
      */
     private void syncScheduleFromItem(Train train) {
@@ -1278,29 +1275,75 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         return slot(index);
     }
 
+    /**
+     * 取出物品：时刻表走 Create 的 returnSchedule（写回 savedProgress → 清空列车时刻表），
+     * 然后注销虚拟列车，回到"无表即无车"的干净状态。
+     */
     @Override
     public ItemStack removeItem(int index, int amount) {
-        ItemStack current = slot(index);
-        if (current.isEmpty()) return ItemStack.EMPTY;
-        ItemStack taken = current.split(amount);
-        setItem(index, current);
-        return taken;
+        if (index != 0) {
+            ItemStack current = slot(index);
+            if (current.isEmpty()) return ItemStack.EMPTY;
+            ItemStack taken = current.split(amount);
+            setItem(index, current);
+            return taken;
+        }
+        ItemStack out = takeScheduleLikeCreate();
+        return out;
     }
 
     @Override
     public ItemStack removeItemNoUpdate(int index) {
-        ItemStack current = slot(index);
-        setItem(index, ItemStack.EMPTY);
-        return current;
+        if (index != 0) {
+            ItemStack current = slot(index);
+            setItem(index, ItemStack.EMPTY);
+            return current;
+        }
+        return takeScheduleLikeCreate();
     }
 
+    /** 照抄 Create 的"取出时刻表"：returnSchedule → savedProgress 写回 → discardSchedule。 */
+    private ItemStack takeScheduleLikeCreate() {
+        try {
+            if (level != null && !level.isClientSide && boundTrain != null) {
+                Train train = Create.RAILWAYS.trains.get(boundTrain);
+                if (train != null && train.runtime.schedule != null) {
+                    ItemStack out = train.runtime.returnSchedule(level.registryAccess());
+                    HexieTrain.LOGGER.info("[HexieTrain][schedule] 取出时刻表（游标已写回）");
+                    scheduleSlot = ItemStack.EMPTY;
+                    dissolve();
+                    setChanged();
+                    sendDataThrottled();
+                    return out == null ? ItemStack.EMPTY : out;
+                }
+            }
+        } catch (Throwable t) {
+            HexieTrain.LOGGER.warn("[HexieTrain][schedule] 取出失败: {}", t.toString());
+        }
+        ItemStack cur = scheduleSlot;
+        scheduleSlot = ItemStack.EMPTY;
+        setChanged();
+        sendDataThrottled();
+        return cur;
+    }
+
+    /**
+     * 放入物品。照抄 Create：列车已有时刻表时拒绝再放（必须先取出）。
+     */
     @Override
     public void setItem(int index, ItemStack stack) {
-        if (index == 0) {
-            setScheduleSlot(stack);
-        } else {
+        if (index != 0) {
             setFrequency(index - 1, stack);
+            return;
         }
+        if (level != null && !level.isClientSide && boundTrain != null) {
+            Train train = Create.RAILWAYS.trains.get(boundTrain);
+            if (train != null && train.runtime.schedule != null) {
+                HexieTrain.LOGGER.info("[HexieTrain][schedule] 车上已有时刻表，拒绝再放（请先取出）");
+                return;
+            }
+        }
+        setScheduleSlot(stack);
     }
 
     @Override
