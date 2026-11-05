@@ -776,18 +776,19 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double v = Math.abs(measuredSpeedMps());
             legRemaining = Math.max(0.0, legRemaining - v / 20.0);
 
-            // ── 制动：使用 Create 的沿轨距离 distanceToDestination（环线上直线距离无意义）──
-            double dNav = Math.max(0.0, nav.distanceToDestination);
-            double decel = 1.5;                                   // 期望减速度 m/s²
-            double need = (v * v) / (2 * decel) + 0.5;            // 刹停所需沿轨距离
-            double brakeFrac = dNav >= need ? 0.0 : 1.0 - dNav / need;
+            // ── 制动：用 legRemaining（它按物理实测速度递减，跟随物理车真实进度）──
+            // 不能用 nav.distanceToDestination：那是虚拟车的距离，虚拟车不动，永远不接近 0。
+            double dNearImpl = physicalDistanceTo(st);   // 物理车到站台的真实距离（仅用于到站判定）
+            double dLeft = Math.max(0.0, legRemaining);
+            double need = (v * v) / (2 * 1.5) + 0.5;      // 刹停所需距离
+            double brakeFrac = dLeft >= need ? 0.0 : 1.0 - dLeft / need;
             int brakeVal = (int) Math.round(15.0 * brakeFrac);
 
             float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
-            if (dNav <= 0.5) {
+            if (dNearImpl <= 2.0 && v <= 0.3) {
                 setAutoDirection(0f);        // 到点：切断扭矩
                 brakeVal = 15;               // 满刹顶住
-            } else if (dNav <= need && v > 0.5) {
+            } else if (dLeft <= need && v > 0.5) {
                 setAutoDirection(-navDir);   // 制动区且仍在滑行 → 反转扭矩辅助
             } else {
                 setAutoDirection(navDir);    // 正常行驶
