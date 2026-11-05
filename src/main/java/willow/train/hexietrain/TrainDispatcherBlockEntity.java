@@ -691,25 +691,20 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double v = Math.abs(measuredSpeedMps());
             legRemaining = Math.max(0.0, legRemaining - v / 20.0);
 
-            // 扭矩：正常跟随导航；进入停站区则反转顶住（之前能停住的做法）
             float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
-            // 停车依据 = 物理车到站台点的真实距离（不是我们自己的 legRemaining）
-            double dPhys = physicalDistanceTo(st);
-            double stopZone = Math.max(3.0, v * 1.2);
-            if (dPhys <= 1.5) {
-                setAutoDirection(0f);            // 到点：切断扭矩，车停在原地
-            } else if (dPhys <= stopZone) {
-                if (v > 0.4) setAutoDirection(-navDir);   // 近了还在滑 → 反转顶住
-                else         setAutoDirection(navDir);     // 停住了 → 慢慢爬进去
-            } else {
-                setAutoDirection(navDir);
-            }
-            // 刹车：末端制导（越近越强）
-            double brakeFrac = legRemaining >= stopZone ? 0.0 : 1.0 - legRemaining / stopZone;
-            int brakeVal = (int) Math.round(15.0 * brakeFrac);
-            if (legRemaining < 1.0) brakeVal = 15;
-            SetOutputBrake(brakeVal);
 
+            // 关键判据：当前站台 == 目标站台 才允许刹车；否则无视停车指令，继续按导航前进
+            GlobalStation curStation = train.getCurrentStation();
+            boolean atTarget = curStation != null && st != null
+                    && (curStation == st || String.valueOf(curStation.name).equals(String.valueOf(st.name)));
+
+            if (atTarget) {
+                setAutoDirection(0f);        // 已在本站：切断扭矩
+                SetOutputBrake(15);          // 满刹，停住
+            } else {
+                setAutoDirection(navDir);    // 不在本站：无条件前进
+                SetOutputBrake(0);           // 不下发刹车
+            }
             // 到站：物理车已经走完这段沿轨距离 → 告诉 Create
             if (physicalDistanceTo(st) <= 1.5 && v < 0.5) {
                 HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车）", st.name);
