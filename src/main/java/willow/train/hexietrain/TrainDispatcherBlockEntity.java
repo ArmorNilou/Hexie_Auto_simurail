@@ -154,16 +154,16 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 所有已加载的调度台（由全局 ticker 驱动，不依赖方块实体自身 tick）。 */
     private static final Set<TrainDispatcherBlockEntity> ACTIVE = ConcurrentHashMap.newKeySet();
-    /** 每个列车 id 只认一个 BE 实例（身份认领，坐标不同也能识别副本）。 */
+    /** 每列车只认一个驱动者实例（按对象身份，不按方块坐标——Sable 绘图区坐标与世界坐标不一致）。 */
     private static final java.util.Map<UUID, TrainDispatcherBlockEntity> TRAIN_OWNER = new ConcurrentHashMap<>();
 
-
     /** 本 BE 是否是这列车唯一的驱动者。 */
-    private boolean isOwner() {
+    private boolean isDriver() {
         if (boundTrain == null) return false;
         TrainDispatcherBlockEntity o = TRAIN_OWNER.putIfAbsent(boundTrain, this);
         return o == null || o == this;
     }
+
 
     public static Set<TrainDispatcherBlockEntity> activeDispatchers() {
         return ACTIVE;
@@ -466,7 +466,17 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 }
             } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][diag] {}", t.toString()); }
 
-            if (!isOwner()) return;   // 非认领者不得驱动
+            if (!isDriver()) return;   // 非认领者不得驱动
+            // POST_TRANSIT 卡死兜底：条件列为空时 tickConditions 永不推进
+            try {
+                var rt0 = train.runtime;
+                if (rt0.state == com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.POST_TRANSIT
+                        && rt0.schedule != null && rt0.currentEntry >= 0
+                        && rt0.currentEntry < rt0.schedule.entries.size()) {
+                    var c0 = rt0.schedule.entries.get(rt0.currentEntry).conditions;
+                    if (c0.isEmpty()) c0.add(new java.util.ArrayList<>());
+                }
+            } catch (Throwable ignored) {}
             int left = leftSignal(), right = rightSignal();
             boolean redstonePresent = left > 0 || right > 0;
 
@@ -580,7 +590,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         try {
             train.speed = 0;        // ★ 不自走
             train.targetSpeed = 0;
-            if (train.derailed || train.invalid || !isPrimaryDispatcher()) return;
+            if (train.derailed || train.invalid || !isDriver()) return;
 
             var nav = train.navigation;
             if (nav == null || nav.destination == null) return;
