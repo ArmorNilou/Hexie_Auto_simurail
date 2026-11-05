@@ -180,8 +180,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private int missingTicks = 0;
     private int presenceTicks = 0;
     private long lastSendTick = -1;
-    private int lastLeftSig = 0, lastRightSig = 0;   // 红石上升沿检测
-    private int bindGraceTicks = 0;                  // 绑定后宽限，忽略既有红石
     private int diagTicks = 0;
     private GlobalStation dwellingStation = null;   // 停站锁：物理车没走就不再判到站
     private String lastDestName = "";
@@ -226,7 +224,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         }
         for (SignalChannel ch : SignalChannel.VALUES) {
             wireless[ch.index()] = new WirelessChannel(this, ch);
-        ACTIVE.add(this);   // 构造函数即注册：Sable 子结构的加载路径会绕过 read()/initialize()
         }
     }
 
@@ -421,7 +418,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 由 DispatcherTicker 每 tick 调用。 */
     public void serverTick() {
-        if (level == null || level.isClientSide) return;
         updateMeasuredSpeed();
         try {
             if (boundTrain != null && !Create.RAILWAYS.trains.containsKey(boundTrain)) {
@@ -449,8 +445,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 String dn = nv.destination == null ? "null" : nv.destination.name;
                 if (train.runtime.currentEntry != lastEntryLogged) {
                     HexieTrain.LOGGER.info("[HexieTrain][evt] entry {} → {}", lastEntryLogged, train.runtime.currentEntry);
-                    syncProgressToItem(train);   // 游标变了 → 立刻写回物品
                     lastEntryLogged = train.runtime.currentEntry;
+                    syncProgressToItem(train);
                 }
                 if (!dn.equals(lastDestName)) {
                     HexieTrain.LOGGER.info("[HexieTrain][evt] dest {} → {}", lastDestName, dn);
@@ -472,16 +468,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
             if (!isOwner()) return;   // 非认领者不得驱动
             int left = leftSignal(), right = rightSignal();
-            boolean rawRedstone = left > 0 || right > 0;
-            // 只在"红石从无到有"时才算玩家接管；绑定后 40 tick 内一律忽略
-            boolean rising = (left > 0 && lastLeftSig == 0) || (right > 0 && lastRightSig == 0);
-            lastLeftSig = left; lastRightSig = right;
-            if (bindGraceTicks > 0) { bindGraceTicks--; rising = false; }
-            boolean redstonePresent = rawRedstone && manualMode;   // 只有已处于手动才走手动驱动
+            boolean redstonePresent = left > 0 || right > 0;
 
             // 玩家给红石 → 单向切手动（要恢复请点 UI 或重设列车）
             if (redstonePresent) {
-                if (rising && !manualMode) setManualMode(true);   // 仅在上升沿接管
+                if (!manualMode) setManualMode(true);   // 内部会调 syncTrainPresence：注销虚拟列车、通道归零
                 double dir = left > 0 ? 1.0 : -1.0;
                 double mag = Math.max(left, right) / 15.0;
                 train.manualTick = true;
@@ -712,7 +703,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         return stack == null || stack.isEmpty() ? Frequency.EMPTY : Frequency.of(stack);
     }
 
-
+    @Override
     public void initialize() {
         super.initialize();
         ACTIVE.add(this);
@@ -820,9 +811,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      */
     /** 真正建车的私有动作，只被 syncTrainPresence 调用。 */
     /**
-     * 照抄 Create 的 ScheduleRuntime.returnSchedule 第 424-425 行：
-     * 把当前游标写回时刻表物品的 savedProgress（组件 Progress），
-     * 使得下次 setSchedule 时 currentEntry = clamp(savedProgress, ...) 能拿到正确进度。
+     * 照抄 Create 的 ScheduleRuntime.returnSchedule（第 424-425 行）：
+     * 把 currentEntry 写回时刻表物品的 savedProgress，使下次 setSchedule 能读到正确进度。
      */
     private void syncProgressToItem(Train train) {
         if (level == null || level.isClientSide) return;
@@ -831,15 +821,13 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             var sched = train.runtime.schedule;
             if (sched == null) return;
             if (!(scheduleSlot.getItem() instanceof ScheduleItem si)) return;
-            sched.savedProgress = train.runtime.currentEntry;                 // ← 与 Create 完全一致
+            sched.savedProgress = train.runtime.currentEntry;
             @SuppressWarnings("unchecked")
             net.minecraft.core.component.DataComponentType<Object> type =
                     (net.minecraft.core.component.DataComponentType<Object>) si.getComponentType();
-            scheduleSlot.set(type, sched.write(level.registryAccess()));       // ← 写进组件
+            scheduleSlot.set(type, sched.write(level.registryAccess()));
             setChanged();
-        } catch (Throwable t) {
-            HexieTrain.LOGGER.warn("[HexieTrain][progress] 写回物品失败: {}", t.toString());
-        }
+        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][progress] {}", t.toString()); }
     }
 
     private void bindTrainNow() {
@@ -862,7 +850,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private void syncTrainPresence() {
         if (level == null || level.isClientSide) return;
         boolean shouldExist = !scheduleSlot.isEmpty()
-                && scheduleSlot.getItem() instanceof com.simibubi.create.content.trains.schedule.ScheduleItem;   // 手动模式不再拆车，避免时刻表游标被重置
+                && !scheduleSlot.isEmpty()
+                && scheduleSlot.getItem() instanceof com.simibubi.create.content.trains.schedule.ScheduleItem;
 
         if (!shouldExist) {
             if (boundTrain != null) {
@@ -960,7 +949,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     @Override
     protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
-        if (level != null && !level.isClientSide) ACTIVE.add(this);   // 从存档加载也注册进 ticker
         super.read(tag, registries, clientPacket);
         if (tag.hasUUID("BoundTrain")) boundTrain = tag.getUUID("BoundTrain");   // 缺失时保留已有绑定
         if (boundTrain != null) {
