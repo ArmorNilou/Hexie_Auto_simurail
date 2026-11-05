@@ -849,15 +849,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         return lastBindMessage;
     }
 
-    /**
-     * 放入 / 取出时刻表。
-     *
-    /**
-     * 时刻表槽的唯一入口（容器 TrainDispatcherContainer 直接调用这里）。
-     *
-     * <p>放入 → 立刻建车；清空 → 注销列车。视为玩家"要它跑"的明确意图，
-     * 因此放入时会自动退出玩家操控模式。
-     */
+/**
+ * 时刻表槽的唯一入口（TrainDispatcherContainer 直接调用这里）。
+ *
+ * <p>放入 → 立刻建车；清空 → 注销列车。
+ */
     public void setScheduleSlot(ItemStack stack) {
         this.scheduleSlot = stack == null ? ItemStack.EMPTY : stack.copyWithCount(1);
         refreshStopNames();
