@@ -226,6 +226,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         }
         for (SignalChannel ch : SignalChannel.VALUES) {
             wireless[ch.index()] = new WirelessChannel(this, ch);
+        ACTIVE.add(this);   // 构造函数即注册：Sable 子结构的加载路径会绕过 read()/initialize()
         }
     }
 
@@ -420,6 +421,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 由 DispatcherTicker 每 tick 调用。 */
     public void serverTick() {
+        if (level == null || level.isClientSide) return;
         updateMeasuredSpeed();
         try {
             if (boundTrain != null && !Create.RAILWAYS.trains.containsKey(boundTrain)) {
