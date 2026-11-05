@@ -710,7 +710,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         return stack == null || stack.isEmpty() ? Frequency.EMPTY : Frequency.of(stack);
     }
 
-    @Override
+
     public void initialize() {
         super.initialize();
         ACTIVE.add(this);
@@ -958,6 +958,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     @Override
     protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
+        if (level != null && !level.isClientSide) ACTIVE.add(this);   // 从存档加载也注册进 ticker
         super.read(tag, registries, clientPacket);
         if (tag.hasUUID("BoundTrain")) boundTrain = tag.getUUID("BoundTrain");   // 缺失时保留已有绑定
         if (boundTrain != null) {
