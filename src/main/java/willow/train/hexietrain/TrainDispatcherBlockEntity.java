@@ -154,6 +154,13 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 所有已加载的调度台（由全局 ticker 驱动，不依赖方块实体自身 tick）。 */
     private static final Set<TrainDispatcherBlockEntity> ACTIVE = ConcurrentHashMap.newKeySet();
+    /** 列车 id → 调度器：供 Train 速度注入 mixin 查询。 */
+    public static final java.util.Map<UUID, TrainDispatcherBlockEntity> BY_TRAIN = new ConcurrentHashMap<>();
+
+    /** 供 mixin 调用：物理车沿轨位移（格/tick，带符号）。 */
+    public double physicalSpeedPerTick() {
+        try { return bodySpeedAlongTrackBps() / 20.0; } catch (Throwable t) { return 0.0; }
+    }
     /** 每个列车 id 只认一个 BE 实例（身份认领，坐标不同也能识别副本）。 */
     private static final java.util.Map<UUID, TrainDispatcherBlockEntity> TRAIN_OWNER = new ConcurrentHashMap<>();
 
@@ -637,7 +644,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     private void driveToStation(Train train) {
         try {
-            train.speed = 0;        // ★ 不自走
+            // 速度由 mixin 每 tick 注入物理位移，不再冻结
             train.targetSpeed = 0;
             if (train.derailed || train.invalid || !isPrimaryDispatcher()) return;
 
@@ -860,6 +867,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         }
         if (level != null) {
         }
+        if (boundTrain != null) BY_TRAIN.remove(boundTrain);
         boundTrain = null;
         lastDestination = null;
     }
@@ -948,6 +956,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
     public void bindTrain(UUID id) {
+        BY_TRAIN.put(id, this);
         leftIsForward = null;   // 重新判定朝向
         boundTrain = id;
         lastDestination = null;
