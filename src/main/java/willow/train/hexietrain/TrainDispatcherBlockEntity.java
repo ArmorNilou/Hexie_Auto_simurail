@@ -118,7 +118,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private static final double REVERSE_ZONE_BLOCKS = 20.0;
     /** 判定"刹不住"的安全余量（格）。 */
     private static final double STOP_MARGIN_BLOCKS = 2.0;
-    private static final double BRAKE_DECEL = 1.5;   // 期望减速度 m/s²（唯一手调参数）
 
     /** 本次行程是否还想到站：到站后置 false，离站足够远再置回 true。 */
     private int arrivedEntry = -1;
@@ -166,7 +165,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      */
     private boolean isDriver() {
         if (boundTrain == null) return false;
-        if (level == null || level.isClientSide) return false;   // 客户端实例不得认领驱动权
         TrainDispatcherBlockEntity cur = TRAIN_OWNER.get(boundTrain);
         if (cur == this) return true;
         if (cur == null) {
@@ -200,6 +198,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private int presenceTicks = 0;
     private long lastSendTick = -1;
     private int diagTicks = 0;
+    private GlobalStation dwellingStation = null;   // 停站锁：物理车没走就不再判到站
     private String lastDestName = "";
     private int lastEntryLogged = -1;
     private double pendingLeg = -1;   // Create 刚规划出的新段长度（在被我们写脏之前捕获）
@@ -335,7 +334,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private void ensureConductors(Train train) {
         try {
             if (train == null) return;
-            probe(train);
             for (var c : train.carriages) {
                 if (c.presentConductors == null) continue;
                 c.presentConductors.replace(v -> Boolean.TRUE);
@@ -399,7 +397,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 切换自动驾驶 / 玩家操控。切回自动时会恢复寻路。 */
     public void setManualMode(boolean value) {
         manualMode = value;
-        if (value) { SetOutputBrake(0); setOutput(SignalChannel.LEFT, 0); setOutput(SignalChannel.RIGHT, 0); refreshWireless(); }   // 交权：清掉我们之前留下的输出
         if (level != null && !level.isClientSide && boundTrain != null) {
             Train train = Create.RAILWAYS.trains.get(boundTrain);
             if (train != null) {
@@ -455,8 +452,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 由 DispatcherTicker 每 tick 调用。 */
     public void serverTick() {
-        if (level == null || level.isClientSide) return;   // 客户端不跑任何逻辑
-        if (boundTrain == null && !scheduleSlot.isEmpty() && (probeTicks % 200 == 0)) HexieTrain.LOGGER.warn("[HexieTrain][run] 服务端无绑定但槽里有表（pos={}）", worldPosition.toShortString());
         updateMeasuredSpeed();
         try {
             if (boundTrain != null && !Create.RAILWAYS.trains.containsKey(boundTrain)) {
@@ -467,15 +462,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][run] 自检异常 {}", t.toString()); }
         if (presenceTicks++ % 20 == 0) syncTrainPresence();   // 每 20 tick 校验一次
-        // 服务端自愈：槽里有表但没绑定 → 自己建车（不依赖客户端同步的 NBT）
-        if (boundTrain == null && !scheduleSlot.isEmpty() && !manualMode
-                && scheduleSlot.getItem() instanceof com.simibubi.create.content.trains.schedule.ScheduleItem) {
-            if (probeTicks % 40 == 0) {
-                HexieTrain.LOGGER.info("[HexieTrain][heal] 服务端无绑定但槽里有表 → 自行建车 @{}", worldPosition.toShortString());
-                bindTrainNow();
-            }
-        }
-        probeTicks++;
         if (boundTrain != null) tickAutomated(); else tickManual();
     }
 
@@ -486,6 +472,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             if (!isDriver()) return;   // 非驱动者什么都不做（不写状态、不刷日志）
             if (train == null) return;
             ensureConductors(train);
+
+            // ── 飞行记录仪：一次测试收集全部状态 ──
             if (!isPrimaryDispatcher()) return;   // 只让主调度器打日志，副本不刷屏
             try {
                 var nv = train.navigation;
@@ -538,7 +526,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 return;
             }
             // 手动模式：blockstate 由 Block.neighborChanged 独占，我们绝不写（否则会抹掉红石状态）
-            if (manualMode) return;   // 玩家操控：刹车/通道全部交给玩家，我们一律不写
+            if (manualMode) { SetOutputBrake(15); return; }
 
             driveToStation(train);
         } catch (Throwable t) {
@@ -682,100 +670,17 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      * </ol>
      * 绝不写 train.speed / navigation.distanceToDestination / runtime.state / currentPath / destination。
      */
-    // ══════════ 全参数广播探针 ══════════
-
-    private int probeTicks = 0;
-
-    /** 把能想到的所有相关状态打一行，任何一环出错都会暴露在这里。 */
-    private void probe(Train train) {
-        if (probeTicks % 20 != 0) return;
-        StringBuilder b = new StringBuilder(420);
-        b.append("[probe] pos=").append(worldPosition.toShortString());
-        add(b, "driver", () -> String.valueOf(isDriver()));
-        add(b, "manual", () -> String.valueOf(manualMode));
-        add(b, "slotEmpty", () -> String.valueOf(scheduleSlot.isEmpty()));
-        add(b, "slotItem", () -> scheduleSlot.isEmpty() ? "-" : scheduleSlot.getItem().toString());
-        add(b, "bound", () -> boundTrain == null ? "-" : boundTrain.toString().substring(0, 8));
-        if (train != null) {
-            add(b, "tid", () -> train.id.toString().substring(0, 8));
-            add(b, "speed", () -> f(train.speed));
-            add(b, "tgtSpeed", () -> f(train.targetSpeed));
-            add(b, "derail", () -> String.valueOf(train.derailed));
-            add(b, "curStation", () -> { var c = train.getCurrentStation(); return c == null ? "-" : String.valueOf(c.name); });
-            add(b, "state", () -> String.valueOf(train.runtime.state));
-            add(b, "entry", () -> train.runtime.currentEntry + "/" + (train.runtime.schedule == null ? -1 : train.runtime.schedule.entries.size()));
-            add(b, "paused", () -> String.valueOf(train.runtime.paused));
-            add(b, "conds", () -> { var rt = train.runtime; if (rt.schedule == null || rt.currentEntry < 0 || rt.currentEntry >= rt.schedule.entries.size()) return "-"; return String.valueOf(rt.schedule.entries.get(rt.currentEntry).conditions.size()); });
-            add(b, "progress", () -> String.valueOf(train.runtime.conditionProgress));
-            var nv = train.navigation;
-            add(b, "dest", () -> nv.destination == null ? "-" : String.valueOf(nv.destination.name));
-            add(b, "dDest", () -> f(nv.distanceToDestination));
-            add(b, "dSignal", () -> f(nv.distanceToSignal));
-            add(b, "behind", () -> String.valueOf(nv.destinationBehindTrain));
-            add(b, "waitSig", () -> nv.waitingForSignal == null ? "-" : "Y");
-            add(b, "path", () -> { try { var fl = nv.getClass().getDeclaredField("currentPath"); fl.setAccessible(true); return String.valueOf(((java.util.List<?>) fl.get(nv)).size()); } catch (Throwable t) { return "ERR"; } });
-        }
-        add(b, "vphys", () -> f(measuredSpeedMps()));
-        add(b, "dPhys", () -> { try { var d = train.navigation.destination; return d == null ? "-" : f(physicalDistanceTo(d)); } catch (Throwable t) { return "ERR"; } });
-        add(b, "vtrack", () -> f(bodySpeedAlongTrackBps()));
-        add(b, "leg", () -> f(legRemaining));
-        add(b, "autoDir", () -> String.valueOf(autoDirection));
-        add(b, "brakeCh", () -> String.valueOf(output(SignalChannel.BRAKE)));
-        add(b, "leftCh", () -> String.valueOf(output(SignalChannel.LEFT)));
-        add(b, "rightCh", () -> String.valueOf(output(SignalChannel.RIGHT)));
-        add(b, "bsL", () -> String.valueOf(getBlockState().getValue(TrainDispatcherBlock.LEFT_POWERED)));
-        add(b, "bsR", () -> String.valueOf(getBlockState().getValue(TrainDispatcherBlock.RIGHT_POWERED)));
-        add(b, "rsL", () -> String.valueOf(leftSignal()));
-        add(b, "rsR", () -> String.valueOf(rightSignal()));
-        add(b, "hasSource", () -> String.valueOf(hasSource()));
-        add(b, "srcFace", () -> { try { return String.valueOf(getSourceFacing()); } catch (Throwable t) { return "-"; } });
-        HexieTrain.LOGGER.info(b.toString());
-    }
-
-    private static String f(double d) { return String.format("%.2f", d); }
-
-    private static void add(StringBuilder b, String key, java.util.function.Supplier<String> s) {
-        b.append(" ").append(key).append("=");
-        try { b.append(s.get()); } catch (Throwable t) { b.append("ERR:").append(t.getClass().getSimpleName()); }
-    }
-
     private void driveToStation(Train train) {
         try {
             if (!(level instanceof net.minecraft.server.level.ServerLevel)) return;
             if (train.derailed || train.invalid) return;
 
-
             var nav = train.navigation;
-            // 判据：我当前所在的站 ≠ 导航目标站 → 无视一切停车指令，强制继续前进
-            try {
-                GlobalStation curSt = train.getCurrentStation();
-                GlobalStation tgtSt = train.navigation.destination;
-                if (curSt != null && tgtSt != null
-                        && curSt != tgtSt
-                        && !String.valueOf(curSt.name).equals(String.valueOf(tgtSt.name))) {
-                    float dirAway = (float) (train.navigation.destinationBehindTrain ? -1.0 : 1.0);
-                    setAutoDirection(dirAway);
-                    SetOutputBrake(0);
-                    HexieTrain.LOGGER.info("[HexieTrain][wrongStation] 当前在 {} 但目标 {} → 无视停车，继续前进",
-                            curSt.name, tgtSt.name);
-                    return;
-                }
-            } catch (Throwable ignored) {}
-
-            // 停站中（POST_TRANSIT / PRE_TRANSIT）：车停在站里，踩住刹车，让 Create 自己等条件
-            try {
-                if (train.runtime.state != com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT) {
-                    setAutoDirection(0f);
-                    SetOutputBrake(15);
-                    return;
-                }
-            } catch (Throwable ignored) {}
             if (nav == null || nav.destination == null) return;
             GlobalStation st = nav.destination;
 
             // 新段：用 Create 给的沿轨长度作为基准（只读一次）
-            if (st != lastLegDest || train.runtime.currentEntry != lastLegEntry || legRemaining < 0
-                    || nav.distanceToDestination > legRemaining + 5.0) {   // Create 重新规划且值变大 → 同步（单向，不回写）
+            if (st != lastLegDest || train.runtime.currentEntry != lastLegEntry || legRemaining < 0) {
                 legRemaining = Math.max(0.0, nav.distanceToDestination);
                 lastLegDest = st;
                 lastLegEntry = train.runtime.currentEntry;
@@ -786,37 +691,22 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double v = Math.abs(measuredSpeedMps());
             legRemaining = Math.max(0.0, legRemaining - v / 20.0);
 
-            // ── 制动：用 legRemaining（它按物理实测速度递减，跟随物理车真实进度）──
-            // 不能用 nav.distanceToDestination：那是虚拟车的距离，虚拟车不动，永远不接近 0。
-            double dNearImpl = physicalDistanceTo(st);   // 物理车到站台的真实距离（仅用于到站判定）
-            double dLeft = Math.max(0.0, legRemaining);
-            double need = (v * v) / (2 * 1.5) + 0.5;      // 刹停所需距离
-            double brakeFrac = dLeft >= need ? 0.0 : 1.0 - dLeft / need;
-            int brakeVal = (int) Math.round(15.0 * brakeFrac);
-
+            // 扭矩永远跟随导航；很近距离且仍在滑行时短暂反转辅助制动
             float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
-            if (dNearImpl <= 2.0 && v <= 0.3) {
-                setAutoDirection(0f);        // 到点：切断扭矩
-                brakeVal = 15;               // 满刹顶住
-            } else if (dLeft <= need && v > 0.5) {
-                setAutoDirection(-navDir);   // 制动区且仍在滑行 → 反转扭矩辅助
-            } else {
-                setAutoDirection(navDir);    // 正常行驶
-            }
+            setAutoDirection(navDir);
+            if (legRemaining < 1.0 && v > 0.5) setAutoDirection(-navDir);
+
+            // 刹车：末端制导（越近越强）
+            double stopZone = Math.max(3.0, v * 1.2);
+            double brakeFrac = legRemaining >= stopZone ? 0.0 : 1.0 - legRemaining / stopZone;
+            int brakeVal = (int) Math.round(15.0 * brakeFrac);
+            if (legRemaining < 1.0) brakeVal = 15;
             SetOutputBrake(brakeVal);
 
             // 到站：物理车已经走完这段沿轨距离 → 告诉 Create
-            // 到站判定：物理车真的停在站台旁（短距离下欧氏距离是准的；长距离才用沿轨）
-            double dNear = physicalDistanceTo(st);
-            if (dNear <= 2.0 && v <= 0.3) {
+            if (legRemaining <= 0.05 && v < 0.5) {
                 HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车）", st.name);
-                try {
-                    train.arriveAt(st);
-                    nav.distanceToDestination = 0;
-                    try { var f2 = nav.getClass().getDeclaredField("currentPath"); f2.setAccessible(true); ((java.util.List<?>) f2.get(nav)).clear(); } catch (Throwable ignored) {}
-                    nav.destination = null;   // ★ 不清这行，ScheduleRuntime.tick 会一直 return
-                    nav.destination = null;   // 照抄 Create：清目标，状态机才能推进
-                } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
+                try { train.arriveAt(st); } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
                 legRemaining = -1;
                 lastLegDest = null;
                 lastLegEntry = -1;
@@ -1049,6 +939,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         legRemaining = -1;
         lastLegDest = null;
         lastLegEntry = -1;
+        dwellingStation = null;
         lastDestName = "";
         lastEntryLogged = -1;
         autoDirection = 0f;
@@ -1125,7 +1016,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     @Override
     protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
-        HexieTrain.LOGGER.info("[HexieTrain][read] side={} clientPacket={} bound={} slotEmpty={} hasBoundTag={}", (level != null && level.isClientSide ? "CLIENT" : "SERVER"), clientPacket, boundTrain == null ? "-" : boundTrain.toString().substring(0,8), (scheduleSlot == null || scheduleSlot.isEmpty()), tag.hasUUID("BoundTrain"));
         super.read(tag, registries, clientPacket);
         if (tag.hasUUID("BoundTrain")) boundTrain = tag.getUUID("BoundTrain");   // 缺失时保留已有绑定
         if (boundTrain != null) {
