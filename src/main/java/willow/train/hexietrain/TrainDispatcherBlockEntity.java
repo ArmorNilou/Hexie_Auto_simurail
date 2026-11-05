@@ -774,20 +774,28 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double v = Math.abs(measuredSpeedMps());
             legRemaining = Math.max(0.0, legRemaining - v / 20.0);
 
-            // 扭矩永远跟随导航；很近距离且仍在滑行时短暂反转辅助制动
-            float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
-            setAutoDirection(navDir);
-            if (legRemaining < 1.0 && v > 0.5) setAutoDirection(-navDir);
-
-            // 刹车：末端制导（越近越强）
-            double stopZone = Math.max(3.0, v * 1.2);
-            double brakeFrac = legRemaining >= stopZone ? 0.0 : 1.0 - legRemaining / stopZone;
+            // ── 制动：全部基于"物理车到站台的真实距离"，绝不使用 legRemaining ──
+            // 因为一旦冲过站点，Create 会把该站算到身后，distanceToDestination 会突然变小，
+            // 用它会误判"快到了"并直接满刹（实测就是 leg=0.73 而实际还有 60 多格）。
+            double dPhys = physicalDistanceTo(st);
+            double decel = 1.5;                                   // 期望减速度 m/s²
+            double need = (v * v) / (2 * decel) + 0.5;            // 刹停所需距离
+            double brakeFrac = dPhys >= need ? 0.0 : 1.0 - dPhys / need;
             int brakeVal = (int) Math.round(15.0 * brakeFrac);
-            if (legRemaining < 1.0) brakeVal = 15;
+
+            float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
+            if (dPhys <= 0.8) {
+                setAutoDirection(0f);        // 到点：切断扭矩
+                brakeVal = 15;               // 满刹顶住
+            } else if (dPhys <= need && v > 0.5) {
+                setAutoDirection(-navDir);   // 进入制动区且仍在滑行 → 反转扭矩辅助
+            } else {
+                setAutoDirection(navDir);    // 正常行驶
+            }
             SetOutputBrake(brakeVal);
 
             // 到站：物理车已经走完这段沿轨距离 → 告诉 Create
-            if (legRemaining <= 0.05 && v < 0.5) {
+            if (dPhys <= 1.0 && v < 0.3) {
                 HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车）", st.name);
                 try {
                     train.arriveAt(st);
