@@ -560,38 +560,31 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
     /**
-     * 自动模式的传动输出。只在 !manualMode 时调用，因此 blockstate 所有权是互斥的：
-     * 手动模式由 Block.neighborChanged 独占，自动模式由这里独占。
+     * 输出传动方向：写 blockstate 的 LEFT/RIGHT_POWERED 并重建动力学网络。
      *
-     * <p>同时做两件事：
-     * <ol>
-     *   <li>写 blockstate 的 LEFT/RIGHT_POWERED 并重建动力学网络 —— 这是扭矩来源</li>
-     *   <li>驱动无线通道 —— 给远程接收器（刹车/岔道）用</li>
-     * </ol>
+     * <p>不按"方向是否变化"提前返回，而是每 tick 校验 blockstate 是否与期望一致：
+     * 只写一次的话，一旦那次写入被覆盖（网络未就绪/邻居更新/BE 重建），
+     * 之后就永远不会再写，表现为"方向记录了但车不动"。
      */
     private void setAutoDirection(float dir) {
-        if (Math.abs(dir - autoDirection) < 1.0E-4f) return;
         autoDirection = dir;
-        boolean pol = leftPolarity();
-        boolean forward = dir > 0.001f, reverse = dir < -0.001f;
-        boolean left  = forward ? pol : (reverse ? !pol : false);
-        boolean right = forward ? !pol : (reverse ? pol : false);
-
-        setOutput(SignalChannel.LEFT,  left  ? 15 : 0);
-        setOutput(SignalChannel.RIGHT, right ? 15 : 0);
-        refreshWireless();
-
-        if (!(level instanceof ServerLevel sl)) return;
+        if (!(level instanceof net.minecraft.server.level.ServerLevel sl)) return;
         try {
             BlockState st = getBlockState();
             if (!(st.getBlock() instanceof TrainDispatcherBlock block)) return;
+            boolean pol = leftPolarity();
+            boolean forward = dir > 0.001f, reverse = dir < -0.001f;
+            boolean left  = forward ? pol : (reverse ? !pol : false);
+            boolean right = forward ? !pol : (reverse ? pol : false);
             if (st.getValue(TrainDispatcherBlock.LEFT_POWERED) == left
-                    && st.getValue(TrainDispatcherBlock.RIGHT_POWERED) == right) return;
+                    && st.getValue(TrainDispatcherBlock.RIGHT_POWERED) == right) return;   // 已经是期望状态
             sl.setBlock(worldPosition, st.setValue(TrainDispatcherBlock.LEFT_POWERED, left)
                     .setValue(TrainDispatcherBlock.RIGHT_POWERED, right), 3);
             block.detachKinetics(sl, worldPosition, true);
+            HexieTrain.LOGGER.info("[HexieTrain][kinetics] 写输出 L={} R={} @{}", left, right, worldPosition);
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][kinetics] {}", t.toString()); }
     }
+
 
 
 
