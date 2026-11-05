@@ -138,6 +138,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private float autoDirection = 0f;
     /** 方块的"左"是否就是虚拟列车定义的前进方向（绑定/放置时一次判定，之后不变）。 */
     private Boolean leftIsForward = null;
+    private boolean polarityCorrected = false;   // 极性是否已被实测校正过
 
     /** 输出传动比 0~1：视距内按加速度渐变到 1，视距外直接用二进制。 */
     private float outputRatio = 0f;
@@ -690,6 +691,19 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             // 用物理速度核减（只更新我们自己的值）
             double v = Math.abs(measuredSpeedMps());
             legRemaining = Math.max(0.0, legRemaining - v / 20.0);
+
+            // 极性校正：实测沿轨速度方向与命令方向相反 → 翻转一次，之后锁定
+            try {
+                double vt = bodySpeedAlongTrackBps();
+                boolean movingForward = vt > 0;
+                boolean wantForward = !nav.destinationBehindTrain;
+                if (!polarityCorrected && Math.abs(vt) > 1.0 && movingForward != wantForward) {
+                    leftIsForward = !leftPolarity();
+                    polarityCorrected = true;
+                    HexieTrain.LOGGER.info("[HexieTrain][dir] 实测方向相反 → 翻转极性 leftIsForward={}", leftIsForward);
+                    setAutoDirection(0f);
+                }
+            } catch (Throwable ignored) {}
 
             float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
 
