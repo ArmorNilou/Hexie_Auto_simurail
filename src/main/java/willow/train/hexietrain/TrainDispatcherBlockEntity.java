@@ -154,33 +154,16 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 所有已加载的调度台（由全局 ticker 驱动，不依赖方块实体自身 tick）。 */
     private static final Set<TrainDispatcherBlockEntity> ACTIVE = ConcurrentHashMap.newKeySet();
-    /** 每列车只认一个驱动者实例（按对象身份，不按方块坐标——Sable 绘图区坐标与世界坐标不一致）。 */
+    /** 每个列车 id 只认一个 BE 实例（身份认领，坐标不同也能识别副本）。 */
     private static final java.util.Map<UUID, TrainDispatcherBlockEntity> TRAIN_OWNER = new ConcurrentHashMap<>();
-    private int ownerWarnTicks = 0;
-    /**
-     * 本 BE 是否是这列车唯一的驱动者。
-     *
-     * <p>旧 owner 若已失效（被移除 / 没有 level），必须能被抢占，
-     * 否则活着的实例永远拿不到驱动权，表现为"服务端完全沉默"。
-     */
-    private boolean isDriver() {
-        if (boundTrain == null) return false;
-        TrainDispatcherBlockEntity cur = TRAIN_OWNER.get(boundTrain);
-        if (cur == this) return true;
-        if (cur == null) {
-            TrainDispatcherBlockEntity raced = TRAIN_OWNER.putIfAbsent(boundTrain, this);
-            return raced == null || raced == this;
-        }
-        if (cur.isRemoved() || cur.getLevel() == null) {
-            TRAIN_OWNER.put(boundTrain, this);
-            HexieTrain.LOGGER.info("[HexieTrain][owner] 抢占失效驱动权 @{}", worldPosition);
-            return true;
-        }
-        if (ownerWarnTicks++ % 200 == 0)
-            HexieTrain.LOGGER.warn("[HexieTrain][owner] 本实例不是驱动者，被上游实例占用（{} tick）", ownerWarnTicks);
-        return false;
-    }
 
+
+    /** 本 BE 是否是这列车唯一的驱动者。 */
+    private boolean isOwner() {
+        if (boundTrain == null) return false;
+        TrainDispatcherBlockEntity o = TRAIN_OWNER.putIfAbsent(boundTrain, this);
+        return o == null || o == this;
+    }
 
     public static Set<TrainDispatcherBlockEntity> activeDispatchers() {
         return ACTIVE;
@@ -241,7 +224,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         }
         for (SignalChannel ch : SignalChannel.VALUES) {
             wireless[ch.index()] = new WirelessChannel(this, ch);
-        ACTIVE.add(this);   // 构造函数即注册：某些加载路径不经过 initialize()
         }
     }
 
@@ -279,22 +261,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         Direction facing = getBlockState().getValue(TrainDispatcherBlock.FACING);
         return facing.getAxis().isHorizontal() ? facing : null;
     }
-    /**
-     * 本方块不消耗应力：它只是传动链上的换向器，自身不做功。
-     * 不覆盖的话 Create 会按默认 impact 值向网络索取 SU（实测：空转也吃应力）。
-     */
-    @Override
-    public float calculateStressApplied() {
-        this.lastStressApplied = 0f;
-        return 0f;
-    }
-
-    /** 也不提供应力容量。 */
-    @Override
-    public float calculateAddedStressCapacity() {
-        return 0f;
-    }
-
 
     /** 传动比（照抄参考实现）。 */
     @Override
@@ -469,7 +435,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private void tickAutomated() {
         try {
             Train train = Create.RAILWAYS.trains.get(boundTrain);
-            if (!isDriver()) return;   // 非驱动者什么都不做（不写状态、不刷日志）
             if (train == null) return;
             ensureConductors(train);
 
@@ -481,7 +446,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 if (train.runtime.currentEntry != lastEntryLogged) {
                     HexieTrain.LOGGER.info("[HexieTrain][evt] entry {} → {}", lastEntryLogged, train.runtime.currentEntry);
                     lastEntryLogged = train.runtime.currentEntry;
-                    syncProgressToItem(train);
                 }
                 if (!dn.equals(lastDestName)) {
                     HexieTrain.LOGGER.info("[HexieTrain][evt] dest {} → {}", lastDestName, dn);
@@ -501,17 +465,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 }
             } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][diag] {}", t.toString()); }
 
-            if (!isDriver()) return;   // 非认领者不得驱动
-            // POST_TRANSIT 卡死兜底：条件列为空时 tickConditions 永不推进
-            try {
-                var rt0 = train.runtime;
-                if (rt0.state == com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.POST_TRANSIT
-                        && rt0.schedule != null && rt0.currentEntry >= 0
-                        && rt0.currentEntry < rt0.schedule.entries.size()) {
-                    var c0 = rt0.schedule.entries.get(rt0.currentEntry).conditions;
-                    if (c0.isEmpty()) c0.add(new java.util.ArrayList<>());
-                }
-            } catch (Throwable ignored) {}
+            if (!isOwner()) return;   // 非认领者不得驱动
             int left = leftSignal(), right = rightSignal();
             boolean redstonePresent = left > 0 || right > 0;
 
@@ -537,29 +491,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 未绑定：只做红石模式同步，不驱动任何东西。 */
     private void tickManual() {
         boolean manual = leftSignal() > 0 || rightSignal() > 0;
-        if (manual != manualMode) {
-            manualMode = manual;
-            setChanged();
-            sendData();
-        }
-        if (!manual) resetDirectionOutput();   // 空闲：默认不输出传动
+        if (manual != manualMode) { manualMode = manual; setChanged(); sendData(); }
     }
-
-    /** 把传动输出归零（blockstate 两侧都不通电 = 不传递旋转）。 */
-    private void resetDirectionOutput() {
-        autoDirection = 0f;
-        if (!(level instanceof ServerLevel sl)) return;
-        try {
-            BlockState st = getBlockState();
-            if (!(st.getBlock() instanceof TrainDispatcherBlock block)) return;
-            if (!st.getValue(TrainDispatcherBlock.LEFT_POWERED) && !st.getValue(TrainDispatcherBlock.RIGHT_POWERED)) return;
-            sl.setBlock(worldPosition, st.setValue(TrainDispatcherBlock.LEFT_POWERED, false)
-                    .setValue(TrainDispatcherBlock.RIGHT_POWERED, false), 3);
-            block.detachKinetics(sl, worldPosition, true);
-            HexieTrain.LOGGER.info("[HexieTrain][kinetics] 空闲输出归零 @{}", worldPosition);
-        } catch (Throwable ignored) {}
-    }
-
 
     /**
      * 一次判定：方块的"左"是否等于虚拟列车的前进方向。
@@ -598,31 +531,38 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
     /**
-     * 输出传动方向：写 blockstate 的 LEFT/RIGHT_POWERED 并重建动力学网络。
+     * 自动模式的传动输出。只在 !manualMode 时调用，因此 blockstate 所有权是互斥的：
+     * 手动模式由 Block.neighborChanged 独占，自动模式由这里独占。
      *
-     * <p>不按"方向是否变化"提前返回，而是每 tick 校验 blockstate 是否与期望一致：
-     * 只写一次的话，一旦那次写入被覆盖（网络未就绪/邻居更新/BE 重建），
-     * 之后就永远不会再写，表现为"方向记录了但车不动"。
+     * <p>同时做两件事：
+     * <ol>
+     *   <li>写 blockstate 的 LEFT/RIGHT_POWERED 并重建动力学网络 —— 这是扭矩来源</li>
+     *   <li>驱动无线通道 —— 给远程接收器（刹车/岔道）用</li>
+     * </ol>
      */
     private void setAutoDirection(float dir) {
+        if (Math.abs(dir - autoDirection) < 1.0E-4f) return;
         autoDirection = dir;
-        if (!(level instanceof net.minecraft.server.level.ServerLevel sl)) return;
+        boolean pol = leftPolarity();
+        boolean forward = dir > 0.001f, reverse = dir < -0.001f;
+        boolean left  = forward ? pol : (reverse ? !pol : false);
+        boolean right = forward ? !pol : (reverse ? pol : false);
+
+        setOutput(SignalChannel.LEFT,  left  ? 15 : 0);
+        setOutput(SignalChannel.RIGHT, right ? 15 : 0);
+        refreshWireless();
+
+        if (!(level instanceof ServerLevel sl)) return;
         try {
             BlockState st = getBlockState();
             if (!(st.getBlock() instanceof TrainDispatcherBlock block)) return;
-            boolean pol = leftPolarity();
-            boolean forward = dir > 0.001f, reverse = dir < -0.001f;
-            boolean left  = forward ? pol : (reverse ? !pol : false);
-            boolean right = forward ? !pol : (reverse ? pol : false);
             if (st.getValue(TrainDispatcherBlock.LEFT_POWERED) == left
-                    && st.getValue(TrainDispatcherBlock.RIGHT_POWERED) == right) return;   // 已经是期望状态
+                    && st.getValue(TrainDispatcherBlock.RIGHT_POWERED) == right) return;
             sl.setBlock(worldPosition, st.setValue(TrainDispatcherBlock.LEFT_POWERED, left)
                     .setValue(TrainDispatcherBlock.RIGHT_POWERED, right), 3);
             block.detachKinetics(sl, worldPosition, true);
-            HexieTrain.LOGGER.info("[HexieTrain][kinetics] 写输出 L={} R={} @{}", left, right, worldPosition);
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][kinetics] {}", t.toString()); }
     }
-
 
 
 
@@ -635,85 +575,84 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      * 虚拟列车不自走（speed 恒 0）：位置只由 TP 决定，到站由我们按物理车位置触发。
      * 这样它永远不可能跑在物理车前面，也就不会抢物理车前方的闭塞区间。
      */
-    /**
-     * 物品里的时刻表若与列车 runtime 里的不一致，就重新应用。
-     * 这里做差异检测，保证 UI 改了目标站后导航立刻跟着变。
-     */
-    private void syncScheduleFromItem(Train train) {
-        if (level == null || level.isClientSide || scheduleSlot.isEmpty() || train == null) return;
-        try {
-            var itemSched = ScheduleItem.getSchedule(level.registryAccess(), scheduleSlot);
-            if (itemSched == null) return;
-            var rt = train.runtime;
-            boolean same = false;
-            if (rt.schedule != null) {
-                same = rt.schedule.entries.size() == itemSched.entries.size()
-                        && rt.schedule.cyclic == itemSched.cyclic
-                        && rt.schedule.write(level.registryAccess()).equals(itemSched.write(level.registryAccess()));
-            }
-            if (same) return;
-            itemSched.savedProgress = rt.schedule == null ? 0 : rt.currentEntry;
-            rt.setSchedule(itemSched, false);
-            rt.paused = false;
-            legRemaining = -1; lastLegDest = null; lastLegEntry = -1; pendingLeg = -1;
-            HexieTrain.LOGGER.info("[HexieTrain][sched] 时刻表已更新，重新应用（{} 条，cyclic={}）",
-                    itemSched.entries.size(), itemSched.cyclic);
-        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][sched] {}", t.toString()); }
-    }
-
-    /**
-     * 我们只做三件事：
-     * <ol>
-     *   <li>读导航方向 → 输出扭矩</li>
-     *   <li>用物理位移核减自己的 legRemaining（只用于算刹车，不回写 Create）</li>
-     *   <li>物理车到站 → 调 Create 的 arriveAt（这是 Create 唯一无法自己知道的事）</li>
-     * </ol>
-     * 绝不写 train.speed / navigation.distanceToDestination / runtime.state / currentPath / destination。
-     */
     private void driveToStation(Train train) {
         try {
-            if (!(level instanceof net.minecraft.server.level.ServerLevel)) return;
-            if (train.derailed || train.invalid) return;
+            train.speed = 0;        // ★ 不自走
+            train.targetSpeed = 0;
+            if (train.derailed || train.invalid || !isPrimaryDispatcher()) return;
 
             var nav = train.navigation;
             if (nav == null || nav.destination == null) return;
             GlobalStation st = nav.destination;
 
-            // 新段：用 Create 给的沿轨长度作为基准（只读一次）
-            if (st != lastLegDest || train.runtime.currentEntry != lastLegEntry || legRemaining < 0) {
-                legRemaining = Math.max(0.0, nav.distanceToDestination);
+            // ① 开始新段：记录沿轨长度
+            if (pendingLeg >= 0 || st != lastLegDest || train.runtime.currentEntry != lastLegEntry || legRemaining < 0) {
+                legRemaining = pendingLeg >= 0 ? pendingLeg : Math.max(0.0, nav.distanceToDestination);
+                pendingLeg = -1;
                 lastLegDest = st;
                 lastLegEntry = train.runtime.currentEntry;
                 HexieTrain.LOGGER.info("[HexieTrain][leg] → {} 沿轨长度={}", st.name, String.format("%.1f", legRemaining));
             }
 
-            // 用物理速度核减（只更新我们自己的值）
+            // ② 物理位移核减（带符号）
+            double vNow = Math.abs(measuredSpeedMps());
+            double moved = (nav.destinationBehindTrain ? -1.0 : 1.0) * vNow / 20.0;   // 用驾驶意图定符号，不用不可靠的切线投影
+            legRemaining = Math.max(0.0, legRemaining - moved);
+            nav.distanceToDestination = legRemaining;
             double v = Math.abs(measuredSpeedMps());
-            legRemaining = Math.max(0.0, legRemaining - v / 20.0);
 
-            // 扭矩永远跟随导航；很近距离且仍在滑行时短暂反转辅助制动
-            float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
-            setAutoDirection(navDir);
-            if (legRemaining < 1.0 && v > 0.5) setAutoDirection(-navDir);
+            // ③ 停站锁：物理车没离开就不重复判到站
+            if (dwellingStation != null) {
+                SetOutputBrake(15);
+                double dd = 0;
+                try { dd = physicalDistanceTo(st); } catch (Throwable ignored) {}
+                if (dd > 8.0) { dwellingStation = null; HexieTrain.LOGGER.info("[HexieTrain][depart] 物理车已离开 {}", st.name); }
+                return;
+            }
 
-            // 刹车：末端制导（越近越强）
-            double stopZone = Math.max(3.0, v * 1.2);
-            double brakeFrac = legRemaining >= stopZone ? 0.0 : 1.0 - legRemaining / stopZone;
+            // ③b 传动方向：驱动本方块自己的左右红石通道（自动模式的唯一动力来源）
+            double stopZone = Math.max(STOP_ZONE, Math.abs(measuredSpeedMps()) * 1.2);   // 按速度动态
+            double dLeft = Math.max(0.0, legRemaining);
+            double brakeFrac = dLeft >= stopZone ? 0.0 : 1.0 - dLeft / stopZone;   // 0→1，越近越强
             int brakeVal = (int) Math.round(15.0 * brakeFrac);
-            if (legRemaining < 1.0) brakeVal = 15;
-            SetOutputBrake(brakeVal);
+            if (dLeft < 1.0) brakeVal = 15;                                        // 1 格内最强刹
+            if (legRemaining <= stopZone) {
+                if (Math.abs(measuredSpeedMps()) > 0.4)
+                    setAutoDirection((float) -(nav.destinationBehindTrain ? -1.0 : 1.0));   // 反转扭矩制动
+                else
+                    setAutoDirection(0f);                                                    // 停稳后切断
+            } else {
+                setAutoDirection((float) (nav.destinationBehindTrain ? -1.0 : 1.0));
+            }
 
-            // 到站：物理车已经走完这段沿轨距离 → 告诉 Create
+            // ④ 刹车
+            double targetV = legRemaining > SLOW_ZONE_BLOCKS ? Double.MAX_VALUE
+                    : Math.max(CREEP_SPEED_MPS, SLOW_ZONE_SPEED_MPS * (legRemaining / SLOW_ZONE_BLOCKS));
+            SetOutputBrake(Math.max(brakeVal, v > targetV + 0.25 ? SignalChannel.brakeStrength(legRemaining, v / 20.0, linearizeBrake) : 0));
+
+            // ⑤ 到站：四步（snap → arriveAt → 清 destination → 清 path）
             if (legRemaining <= 0.05 && v < 0.5) {
-                HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车）", st.name);
-                try { train.arriveAt(st); nav.destination = null; } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
+                snapVirtualTo(train, st);
+                try {
+                    var rt = train.runtime;
+                    if (rt.state != com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT)
+                        rt.state = com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT;
+                    // 条件列为空会导致 tickConditions 永不推进：补一个空列
+                    if (rt.schedule != null && rt.currentEntry >= 0 && rt.currentEntry < rt.schedule.entries.size()) {
+                        var conds = rt.schedule.entries.get(rt.currentEntry).conditions;
+                        if (conds.isEmpty()) conds.add(new java.util.ArrayList<>());
+                    }
+                    train.arriveAt(st); nav.destination = null;   // 唯一新增：清目标，状态机才能推进
+                } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
+                try { var f2 = nav.getClass().getDeclaredField("currentPath"); f2.setAccessible(true); ((java.util.List<?>) f2.get(nav)).clear(); } catch (Throwable ignored) {}
+                nav.destination = null;
+                dwellingStation = st;
+                HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车位置触发）", st.name);
                 legRemaining = -1;
                 lastLegDest = null;
-                lastLegEntry = -1;
             }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][auto] {}", t.toString()); }
     }
-
 
 
     public AbstractContainerMenu createMenu(int containerId, Inventory playerInventory, Player player) {
@@ -785,7 +724,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     @Override
     public void remove() {
         ACTIVE.remove(this);
-        TRAIN_OWNER.values().remove(this);   // 释放驱动权，别挡住后续实例
         if (level != null && !level.isClientSide) {
             for (WirelessChannel ch : wireless) {
                 Create.REDSTONE_LINK_NETWORK_HANDLER.removeFromNetwork(level, ch);
@@ -827,28 +765,20 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         return lastBindMessage;
     }
 
-/**
- * 时刻表槽的唯一入口（TrainDispatcherContainer 直接调用这里）。
- *
- * <p>放入 → 立刻建车；清空 → 注销列车。
- */
+    /**
+     * 放入 / 取出时刻表。
+     *
+     * <p>放入：检查附近转向架 + 物理结构是否在轨道上 → 建 Train → 绑定。
+     * <p>取出：注销 Train（解除寻路、离站、从 RAILWAYS 移除）。
+     */
+    /** 只负责保存时刻表；虚拟列车的有无统一由 syncTrainPresence 决定。 */
     public void setScheduleSlot(ItemStack stack) {
         this.scheduleSlot = stack == null ? ItemStack.EMPTY : stack.copyWithCount(1);
         refreshStopNames();
-        if (level != null && !level.isClientSide) {
-            HexieTrain.LOGGER.info("[HexieTrain][schedule] 设置时刻表：empty={} manual={} bound={}",
-                    scheduleSlot.isEmpty(), manualMode, boundTrain != null);
-            if (!scheduleSlot.isEmpty()) {
-                if (manualMode) { manualMode = false; HexieTrain.LOGGER.info("[HexieTrain][schedule] 放入时刻表 → 退出玩家操控"); }
-                if (boundTrain == null) bindTrainNow();
-            } else if (boundTrain != null) {
-                dissolve();
-            }
-        }
+        // 建/拆由 serverTick 的定期校验统一触发，这里只存数据
         setChanged();
         sendDataThrottled();
     }
-
 
     /** 拆除列车身份：解除寻路 → 离站 → 从 RAILWAYS 移除。 */
     public void dissolve() {
@@ -879,26 +809,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      * 放入时刻表 / 切回自动 → 建车；取出时刻表 / 切手动 / 玩家给红石 → 注销并归零。
      */
     /** 真正建车的私有动作，只被 syncTrainPresence 调用。 */
-    /**
-     * 照抄 Create 的 ScheduleRuntime.returnSchedule（第 424-425 行）：
-     * 把 currentEntry 写回时刻表物品的 savedProgress，使下次 setSchedule 能读到正确进度。
-     */
-    private void syncProgressToItem(Train train) {
-        if (level == null || level.isClientSide) return;
-        if (scheduleSlot.isEmpty() || train == null) return;
-        try {
-            var sched = train.runtime.schedule;
-            if (sched == null) return;
-            if (!(scheduleSlot.getItem() instanceof ScheduleItem si)) return;
-            sched.savedProgress = train.runtime.currentEntry;
-            @SuppressWarnings("unchecked")
-            net.minecraft.core.component.DataComponentType<Object> type =
-                    (net.minecraft.core.component.DataComponentType<Object>) si.getComponentType();
-            scheduleSlot.set(type, sched.write(level.registryAccess()));
-            setChanged();
-        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][progress] {}", t.toString()); }
-    }
-
     private void bindTrainNow() {
         if (!(level instanceof ServerLevel serverLevel)) return;
         try {
@@ -916,23 +826,25 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         }
     }
 
-    /** 只有"槽里没有时刻表"才注销；其它任何情况都不重建、不注销。 */
     private void syncTrainPresence() {
         if (level == null || level.isClientSide) return;
-        boolean hasSchedule = !scheduleSlot.isEmpty()
+        boolean shouldExist = !manualMode
+                && !scheduleSlot.isEmpty()
                 && scheduleSlot.getItem() instanceof com.simibubi.create.content.trains.schedule.ScheduleItem;
-        if (!hasSchedule) {
+
+        if (!shouldExist) {
             if (boundTrain != null) {
-                HexieTrain.LOGGER.info("[HexieTrain][presence] 时刻表已取出 → 注销虚拟列车");
+                HexieTrain.LOGGER.info("[HexieTrain][presence] 注销虚拟列车（手动/无时刻表）");
                 dissolve();
-                resetRuntimeState();
-                resetDirectionOutput();
             }
+            resetRuntimeState();
             return;
         }
-        // 有时刻表但没绑定：交给 setScheduleSlot / bindTrainNow 处理，这里不主动重建
+        if (boundTrain == null) {
+            HexieTrain.LOGGER.info("[HexieTrain][presence] 重建虚拟列车（自动 + 有时刻表）");
+            bindTrainNow();   // 私有动作，绝不回调 setScheduleSlot
+        }
     }
-
 
     /** 把本调度器的运行时状态全部归零（换挡、通道、距离、到站锁）。 */
     private void resetRuntimeState() {
@@ -1305,7 +1217,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     public ItemStack getItem(int index) {
         return slot(index);
     }
-    /** 普通容器取出：不做任何业务动作（曾误把 returnSchedule 挂在这里，导致槽内时刻表被内部流程清空）。 */
+
     @Override
     public ItemStack removeItem(int index, int amount) {
         ItemStack current = slot(index);
@@ -1324,21 +1236,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     @Override
     public void setItem(int index, ItemStack stack) {
-        if (index != 0) {
-            setFrequency(index - 1, stack);
-            return;
-        }
-        if (level != null && !level.isClientSide && boundTrain != null) {
-            Train train = Create.RAILWAYS.trains.get(boundTrain);
-            if (train != null && train.runtime.schedule != null) {
-                HexieTrain.LOGGER.info("[HexieTrain][schedule] 车上已有时刻表，拒绝再放（请先取出）");
-                return;
-            }
-        }
-            HexieTrain.LOGGER.info("[HexieTrain][schedule] 放入时刻表：manual={} bound={}", manualMode, boundTrain != null);
-            if (manualMode) { manualMode = false; HexieTrain.LOGGER.info("[HexieTrain][schedule] 放入时刻表 → 自动退出玩家操控"); }
+        if (index == 0) {
             setScheduleSlot(stack);
-            if (level != null && !level.isClientSide && boundTrain == null) bindTrainNow();   // 放入即建车
+        } else {
+            setFrequency(index - 1, stack);
+        }
     }
 
     @Override
