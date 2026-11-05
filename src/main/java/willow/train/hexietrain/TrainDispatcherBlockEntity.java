@@ -397,6 +397,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 切换自动驾驶 / 玩家操控。切回自动时会恢复寻路。 */
     public void setManualMode(boolean value) {
         manualMode = value;
+        if (value) { SetOutputBrake(0); setOutput(SignalChannel.LEFT, 0); setOutput(SignalChannel.RIGHT, 0); refreshWireless(); }   // 交权：清掉我们之前留下的输出
         if (level != null && !level.isClientSide && boundTrain != null) {
             Train train = Create.RAILWAYS.trains.get(boundTrain);
             if (train != null) {
@@ -526,7 +527,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 return;
             }
             // 手动模式：blockstate 由 Block.neighborChanged 独占，我们绝不写（否则会抹掉红石状态）
-            if (manualMode) { SetOutputBrake(15); return; }
+            if (manualMode) return;   // 玩家操控：刹车/通道全部交给玩家，我们一律不写
 
             driveToStation(train);
         } catch (Throwable t) {
