@@ -118,6 +118,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private static final double REVERSE_ZONE_BLOCKS = 20.0;
     /** 判定"刹不住"的安全余量（格）。 */
     private static final double STOP_MARGIN_BLOCKS = 2.0;
+    private static final double BRAKE_DECEL = 1.5;   // 期望减速度 m/s²（唯一手调参数）
 
     /** 本次行程是否还想到站：到站后置 false，离站足够远再置回 true。 */
     private int arrivedEntry = -1;
@@ -774,28 +775,26 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double v = Math.abs(measuredSpeedMps());
             legRemaining = Math.max(0.0, legRemaining - v / 20.0);
 
-            // ── 制动：全部基于"物理车到站台的真实距离"，绝不使用 legRemaining ──
-            // 因为一旦冲过站点，Create 会把该站算到身后，distanceToDestination 会突然变小，
-            // 用它会误判"快到了"并直接满刹（实测就是 leg=0.73 而实际还有 60 多格）。
-            double dPhys = physicalDistanceTo(st);
+            // ── 制动：使用 Create 的沿轨距离 distanceToDestination（环线上直线距离无意义）──
+            double dNav = Math.max(0.0, nav.distanceToDestination);
             double decel = 1.5;                                   // 期望减速度 m/s²
-            double need = (v * v) / (2 * decel) + 0.5;            // 刹停所需距离
-            double brakeFrac = dPhys >= need ? 0.0 : 1.0 - dPhys / need;
+            double need = (v * v) / (2 * decel) + 0.5;            // 刹停所需沿轨距离
+            double brakeFrac = dNav >= need ? 0.0 : 1.0 - dNav / need;
             int brakeVal = (int) Math.round(15.0 * brakeFrac);
 
             float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
-            if (dPhys <= 0.8) {
+            if (dNav <= 0.5) {
                 setAutoDirection(0f);        // 到点：切断扭矩
                 brakeVal = 15;               // 满刹顶住
-            } else if (dPhys <= need && v > 0.5) {
-                setAutoDirection(-navDir);   // 进入制动区且仍在滑行 → 反转扭矩辅助
+            } else if (dNav <= need && v > 0.5) {
+                setAutoDirection(-navDir);   // 制动区且仍在滑行 → 反转扭矩辅助
             } else {
                 setAutoDirection(navDir);    // 正常行驶
             }
             SetOutputBrake(brakeVal);
 
             // 到站：物理车已经走完这段沿轨距离 → 告诉 Create
-            if (dPhys <= 1.0 && v < 0.3) {
+            if (dNav <= 0.5 && v < 0.3) {
                 HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车）", st.name);
                 try {
                     train.arriveAt(st);
