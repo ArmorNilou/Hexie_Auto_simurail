@@ -900,7 +900,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
         if (!shouldExist) {
             if (boundTrain != null) {
-                HexieTrain.LOGGER.info("[HexieTrain][presence] 注销虚拟列车（手动/无时刻表）");
+                HexieTrain.LOGGER.info("[HexieTrain][presence] 注销：manual={} slotEmpty={} isScheduleItem={}",
+                        manualMode, scheduleSlot.isEmpty(),
+                        !scheduleSlot.isEmpty() && scheduleSlot.getItem() instanceof com.simibubi.create.content.trains.schedule.ScheduleItem);
                 dissolve();
             }
             resetRuntimeState();
