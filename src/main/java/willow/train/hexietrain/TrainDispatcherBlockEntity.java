@@ -695,11 +695,12 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
             double stopZone = Math.max(3.0, v * 1.2);
             if (legRemaining <= stopZone) {
-                if (v > 0.4) setAutoDirection(-navDir);   // 反转扭矩制动
-                else         setAutoDirection(0f);        // 停稳后切断
+                if (v > 0.4) setAutoDirection(-navDir);   // 还在滑行 → 反转扭矩制动
+                else         setAutoDirection(navDir);    // 已停住 → 继续爬，绝不掐扭矩
             } else {
                 setAutoDirection(navDir);
             }
+            if (legRemaining <= 0.05) setAutoDirection(0f);   // 真正到点才切断
 
             // 刹车：末端制导（越近越强）
             double brakeFrac = legRemaining >= stopZone ? 0.0 : 1.0 - legRemaining / stopZone;
