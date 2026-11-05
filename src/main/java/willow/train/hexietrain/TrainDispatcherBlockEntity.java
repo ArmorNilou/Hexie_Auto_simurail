@@ -706,7 +706,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             // 到站：物理车已经走完这段沿轨距离 → 告诉 Create
             if (legRemaining <= 0.05 && v < 0.5) {
                 HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车）", st.name);
-                try { train.arriveAt(st); } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
+                try { train.arriveAt(st); nav.destination = null; } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
                 legRemaining = -1;
                 lastLegDest = null;
                 lastLegEntry = -1;
