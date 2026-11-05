@@ -156,12 +156,29 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private static final Set<TrainDispatcherBlockEntity> ACTIVE = ConcurrentHashMap.newKeySet();
     /** 每列车只认一个驱动者实例（按对象身份，不按方块坐标——Sable 绘图区坐标与世界坐标不一致）。 */
     private static final java.util.Map<UUID, TrainDispatcherBlockEntity> TRAIN_OWNER = new ConcurrentHashMap<>();
-
-    /** 本 BE 是否是这列车唯一的驱动者。 */
+    private int ownerWarnTicks = 0;
+    /**
+     * 本 BE 是否是这列车唯一的驱动者。
+     *
+     * <p>旧 owner 若已失效（被移除 / 没有 level），必须能被抢占，
+     * 否则活着的实例永远拿不到驱动权，表现为"服务端完全沉默"。
+     */
     private boolean isDriver() {
         if (boundTrain == null) return false;
-        TrainDispatcherBlockEntity o = TRAIN_OWNER.putIfAbsent(boundTrain, this);
-        return o == null || o == this;
+        TrainDispatcherBlockEntity cur = TRAIN_OWNER.get(boundTrain);
+        if (cur == this) return true;
+        if (cur == null) {
+            TrainDispatcherBlockEntity raced = TRAIN_OWNER.putIfAbsent(boundTrain, this);
+            return raced == null || raced == this;
+        }
+        if (cur.isRemoved() || cur.getLevel() == null) {
+            TRAIN_OWNER.put(boundTrain, this);
+            HexieTrain.LOGGER.info("[HexieTrain][owner] 抢占失效驱动权 @{}", worldPosition);
+            return true;
+        }
+        if (ownerWarnTicks++ % 200 == 0)
+            HexieTrain.LOGGER.warn("[HexieTrain][owner] 本实例不是驱动者，被上游实例占用（{} tick）", ownerWarnTicks);
+        return false;
     }
 
 
@@ -759,6 +776,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     @Override
     public void remove() {
         ACTIVE.remove(this);
+        TRAIN_OWNER.values().remove(this);   // 释放驱动权，别挡住后续实例
         if (level != null && !level.isClientSide) {
             for (WirelessChannel ch : wireless) {
                 Create.REDSTONE_LINK_NETWORK_HANDLER.removeFromNetwork(level, ch);
