@@ -1354,8 +1354,10 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 return;
             }
         }
+            HexieTrain.LOGGER.info("[HexieTrain][schedule] 放入时刻表：manual={} bound={}", manualMode, boundTrain != null);
+            if (manualMode) { manualMode = false; HexieTrain.LOGGER.info("[HexieTrain][schedule] 放入时刻表 → 自动退出玩家操控"); }
             setScheduleSlot(stack);
-            if (level != null && !level.isClientSide && boundTrain == null && !manualMode) bindTrainNow();   // 放入即建车
+            if (level != null && !level.isClientSide && boundTrain == null) bindTrainNow();   // 放入即建车
     }
 
     @Override
