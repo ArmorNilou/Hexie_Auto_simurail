@@ -467,6 +467,15 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][run] 自检异常 {}", t.toString()); }
         if (presenceTicks++ % 20 == 0) syncTrainPresence();   // 每 20 tick 校验一次
+        // 服务端自愈：槽里有表但没绑定 → 自己建车（不依赖客户端同步的 NBT）
+        if (boundTrain == null && !scheduleSlot.isEmpty() && !manualMode
+                && scheduleSlot.getItem() instanceof com.simibubi.create.content.trains.schedule.ScheduleItem) {
+            if (probeTicks % 40 == 0) {
+                HexieTrain.LOGGER.info("[HexieTrain][heal] 服务端无绑定但槽里有表 → 自行建车 @{}", worldPosition.toShortString());
+                bindTrainNow();
+            }
+        }
+        probeTicks++;
         if (boundTrain != null) tickAutomated(); else tickManual();
     }
 
@@ -679,7 +688,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 把能想到的所有相关状态打一行，任何一环出错都会暴露在这里。 */
     private void probe(Train train) {
-        if (probeTicks++ % 20 != 0) return;
+        if (probeTicks % 20 != 0) return;
         StringBuilder b = new StringBuilder(420);
         b.append("[probe] pos=").append(worldPosition.toShortString());
         add(b, "driver", () -> String.valueOf(isDriver()));
