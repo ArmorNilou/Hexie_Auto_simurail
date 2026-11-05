@@ -629,6 +629,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 沿轨距离核减 + 物理到站。 */
     private double legRemaining = -1;
+    private int dwellTicks = -1;        // >=0 表示正在停站
     private Object lastLegDest = null;
     private int lastLegEntry = -1;
 
@@ -676,6 +677,23 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             if (!(level instanceof net.minecraft.server.level.ServerLevel)) return;
             if (train.derailed || train.invalid) return;
 
+
+            // 停站处理：到站后暂停时刻表，停够时间且速度归零再放行
+            if (dwellTicks >= 0) {
+                setAutoDirection(0f);
+                SetOutputBrake(15);
+                double vs = Math.abs(measuredSpeedMps());
+                dwellTicks++;
+                if (dwellTicks > 100 && vs < 0.2) {
+                    dwellingStation = null;
+                    dwellTicks = -1;
+                    try { train.runtime.paused = false; } catch (Throwable ignored) {}
+                    HexieTrain.LOGGER.info("[HexieTrain][depart] 停站完成 → 恢复时刻表");
+                } else {
+                    return;
+                }
+            }
+
             var nav = train.navigation;
             if (nav == null || nav.destination == null) return;
             GlobalStation st = nav.destination;
@@ -707,7 +725,12 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             // 到站：物理车已经走完这段沿轨距离 → 告诉 Create
             if (legRemaining <= 0.05 && v < 0.5) {
                 HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车）", st.name);
-                try { train.arriveAt(st); } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
+                try {
+                    train.arriveAt(st);
+                    nav.destination = null;                 // 照抄 Create：清目标，状态机才能推进
+                    train.runtime.paused = true;            // 停站：暂停时刻表
+                    dwellTicks = 0;
+                } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
                 legRemaining = -1;
                 lastLegDest = null;
                 lastLegEntry = -1;
