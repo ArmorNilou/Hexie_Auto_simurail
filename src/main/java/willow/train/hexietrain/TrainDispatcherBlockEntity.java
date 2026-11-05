@@ -852,17 +852,29 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /**
      * 放入 / 取出时刻表。
      *
-     * <p>放入：检查附近转向架 + 物理结构是否在轨道上 → 建 Train → 绑定。
-     * <p>取出：注销 Train（解除寻路、离站、从 RAILWAYS 移除）。
+    /**
+     * 时刻表槽的唯一入口（容器 TrainDispatcherContainer 直接调用这里）。
+     *
+     * <p>放入 → 立刻建车；清空 → 注销列车。视为玩家"要它跑"的明确意图，
+     * 因此放入时会自动退出玩家操控模式。
      */
-    /** 只负责保存时刻表；虚拟列车的有无统一由 syncTrainPresence 决定。 */
     public void setScheduleSlot(ItemStack stack) {
         this.scheduleSlot = stack == null ? ItemStack.EMPTY : stack.copyWithCount(1);
         refreshStopNames();
-        // 建/拆由 serverTick 的定期校验统一触发，这里只存数据
+        if (level != null && !level.isClientSide) {
+            HexieTrain.LOGGER.info("[HexieTrain][schedule] 设置时刻表：empty={} manual={} bound={}",
+                    scheduleSlot.isEmpty(), manualMode, boundTrain != null);
+            if (!scheduleSlot.isEmpty()) {
+                if (manualMode) { manualMode = false; HexieTrain.LOGGER.info("[HexieTrain][schedule] 放入时刻表 → 退出玩家操控"); }
+                if (boundTrain == null) bindTrainNow();
+            } else if (boundTrain != null) {
+                dissolve();
+            }
+        }
         setChanged();
         sendDataThrottled();
     }
+
 
     /** 拆除列车身份：解除寻路 → 离站 → 从 RAILWAYS 移除。 */
     public void dissolve() {
