@@ -456,6 +456,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 由 DispatcherTicker 每 tick 调用。 */
     public void serverTick() {
         if (level == null || level.isClientSide) return;   // 客户端不跑任何逻辑
+        if (boundTrain == null && !scheduleSlot.isEmpty() && (probeTicks % 200 == 0)) HexieTrain.LOGGER.warn("[HexieTrain][run] 服务端无绑定但槽里有表（pos={}）", worldPosition.toShortString());
         updateMeasuredSpeed();
         try {
             if (boundTrain != null && !Create.RAILWAYS.trains.containsKey(boundTrain)) {
@@ -1115,6 +1116,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     @Override
     protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
+        HexieTrain.LOGGER.info("[HexieTrain][read] side={} clientPacket={} bound={} slotEmpty={} hasBoundTag={}", (level != null && level.isClientSide ? "CLIENT" : "SERVER"), clientPacket, boundTrain == null ? "-" : boundTrain.toString().substring(0,8), (scheduleSlot == null || scheduleSlot.isEmpty()), tag.hasUUID("BoundTrain"));
         super.read(tag, registries, clientPacket);
         if (tag.hasUUID("BoundTrain")) boundTrain = tag.getUUID("BoundTrain");   // 缺失时保留已有绑定
         if (boundTrain != null) {
