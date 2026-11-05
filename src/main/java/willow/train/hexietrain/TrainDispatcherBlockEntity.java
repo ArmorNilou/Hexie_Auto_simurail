@@ -241,6 +241,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         }
         for (SignalChannel ch : SignalChannel.VALUES) {
             wireless[ch.index()] = new WirelessChannel(this, ch);
+        ACTIVE.add(this);   // 构造函数即注册：某些加载路径不经过 initialize()
         }
     }
 
@@ -1353,7 +1354,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 return;
             }
         }
-        setScheduleSlot(stack);
+            setScheduleSlot(stack);
+            if (level != null && !level.isClientSide && boundTrain == null && !manualMode) bindTrainNow();   // 放入即建车
     }
 
     @Override
