@@ -182,7 +182,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private long lastSendTick = -1;
     private int lastLeftSig = 0, lastRightSig = 0;   // 红石上升沿检测
     private int bindGraceTicks = 0;                  // 绑定后宽限，忽略既有红石
-    private int savedEntry = -1;                     // 跨重建保留时刻表游标
     private int diagTicks = 0;
     private GlobalStation dwellingStation = null;   // 停站锁：物理车没走就不再判到站
     private String lastDestName = "";
@@ -448,6 +447,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 String dn = nv.destination == null ? "null" : nv.destination.name;
                 if (train.runtime.currentEntry != lastEntryLogged) {
                     HexieTrain.LOGGER.info("[HexieTrain][evt] entry {} → {}", lastEntryLogged, train.runtime.currentEntry);
+                    syncProgressToItem(train);   // 游标变了 → 立刻写回物品
                     lastEntryLogged = train.runtime.currentEntry;
                 }
                 if (!dn.equals(lastDestName)) {
@@ -469,7 +469,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][diag] {}", t.toString()); }
 
             if (!isOwner()) return;   // 非认领者不得驱动
-            try { savedEntry = train.runtime.currentEntry; } catch (Throwable ignored) {}
             int left = leftSignal(), right = rightSignal();
             boolean rawRedstone = left > 0 || right > 0;
             // 只在"红石从无到有"时才算玩家接管；绑定后 40 tick 内一律忽略
@@ -818,6 +817,29 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      * 放入时刻表 / 切回自动 → 建车；取出时刻表 / 切手动 / 玩家给红石 → 注销并归零。
      */
     /** 真正建车的私有动作，只被 syncTrainPresence 调用。 */
+    /**
+     * 照抄 Create 的 ScheduleRuntime.returnSchedule 第 424-425 行：
+     * 把当前游标写回时刻表物品的 savedProgress（组件 Progress），
+     * 使得下次 setSchedule 时 currentEntry = clamp(savedProgress, ...) 能拿到正确进度。
+     */
+    private void syncProgressToItem(Train train) {
+        if (level == null || level.isClientSide) return;
+        if (scheduleSlot.isEmpty() || train == null) return;
+        try {
+            var sched = train.runtime.schedule;
+            if (sched == null) return;
+            if (!(scheduleSlot.getItem() instanceof ScheduleItem si)) return;
+            sched.savedProgress = train.runtime.currentEntry;                 // ← 与 Create 完全一致
+            @SuppressWarnings("unchecked")
+            net.minecraft.core.component.DataComponentType<Object> type =
+                    (net.minecraft.core.component.DataComponentType<Object>) si.getComponentType();
+            scheduleSlot.set(type, sched.write(level.registryAccess()));       // ← 写进组件
+            setChanged();
+        } catch (Throwable t) {
+            HexieTrain.LOGGER.warn("[HexieTrain][progress] 写回物品失败: {}", t.toString());
+        }
+    }
+
     private void bindTrainNow() {
         if (!(level instanceof ServerLevel serverLevel)) return;
         try {
@@ -826,17 +848,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             HexieTrain.LOGGER.info("[HexieTrain][presence] 建车 ok={} msg={}", result.ok(), result.message());
             if (result.ok()) {
                 bindTrain(result.trainId());
-                bindGraceTicks = 40;
-                // 恢复重建前的游标，避免每次都从第 1 条重来
-                try {
-                    Train nt = Create.RAILWAYS.trains.get(result.trainId());
-                    if (nt != null && savedEntry > 0 && nt.runtime.schedule != null
-                            && savedEntry < nt.runtime.schedule.entries.size()) {
-                        nt.runtime.currentEntry = savedEntry;
-                        nt.runtime.state = com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.PRE_TRANSIT;
-                        HexieTrain.LOGGER.info("[HexieTrain][presence] 恢复时刻表游标 entry={}", savedEntry);
-                    }
-                } catch (Throwable ignored) {}
                 if (SubLevelSuspend.resume(serverLevel, worldPosition)) {
                     TrainBinder.PERSISTENT_LOADS.add(result.trainId());
                 }
