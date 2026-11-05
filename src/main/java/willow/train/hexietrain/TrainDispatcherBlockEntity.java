@@ -278,6 +278,22 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         Direction facing = getBlockState().getValue(TrainDispatcherBlock.FACING);
         return facing.getAxis().isHorizontal() ? facing : null;
     }
+    /**
+     * 本方块不消耗应力：它只是传动链上的换向器，自身不做功。
+     * 不覆盖的话 Create 会按默认 impact 值向网络索取 SU（实测：空转也吃应力）。
+     */
+    @Override
+    public float calculateStressApplied() {
+        this.lastStressApplied = 0f;
+        return 0f;
+    }
+
+    /** 也不提供应力容量。 */
+    @Override
+    public float calculateAddedStressCapacity() {
+        return 0f;
+    }
+
 
     /** 传动比（照抄参考实现）。 */
     @Override
