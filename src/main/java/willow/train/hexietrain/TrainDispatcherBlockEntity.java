@@ -138,7 +138,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private float autoDirection = 0f;
     /** 方块的"左"是否就是虚拟列车定义的前进方向（绑定/放置时一次判定，之后不变）。 */
     private Boolean leftIsForward = null;
-    private boolean polarityCorrected = false;   // 极性是否已被实测校正过
 
     /** 输出传动比 0~1：视距内按加速度渐变到 1，视距外直接用二进制。 */
     private float outputRatio = 0f;
@@ -692,44 +691,22 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double v = Math.abs(measuredSpeedMps());
             legRemaining = Math.max(0.0, legRemaining - v / 20.0);
 
-            // 极性校正：实测沿轨速度方向与命令方向相反 → 翻转一次，之后锁定
-            try {
-                double vt = bodySpeedAlongTrackBps();
-                boolean movingForward = vt > 0;
-                boolean wantForward = !nav.destinationBehindTrain;
-                if (!polarityCorrected && Math.abs(vt) > 1.0 && movingForward != wantForward) {
-                    leftIsForward = !leftPolarity();
-                    polarityCorrected = true;
-                    HexieTrain.LOGGER.info("[HexieTrain][dir] 实测方向相反 → 翻转极性 leftIsForward={}", leftIsForward);
-                    setAutoDirection(0f);
-                }
-            } catch (Throwable ignored) {}
-
+            // 扭矩永远跟随导航；很近距离且仍在滑行时短暂反转辅助制动
             float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
+            setAutoDirection(navDir);
+            if (legRemaining < 1.0 && v > 0.5) setAutoDirection(-navDir);
 
-            // 关键判据：当前站台 == 目标站台 才允许刹车；否则无视停车指令，继续按导航前进
-            GlobalStation curStation = train.getCurrentStation();
-            boolean atTarget = curStation != null && st != null
-                    && (curStation == st || String.valueOf(curStation.name).equals(String.valueOf(st.name)));
+            // 刹车：末端制导（越近越强）
+            double stopZone = Math.max(3.0, v * 1.2);
+            double brakeFrac = legRemaining >= stopZone ? 0.0 : 1.0 - legRemaining / stopZone;
+            int brakeVal = (int) Math.round(15.0 * brakeFrac);
+            if (legRemaining < 1.0) brakeVal = 15;
+            SetOutputBrake(brakeVal);
 
-            if (atTarget) {
-                setAutoDirection(0f);        // 已在本站：切断扭矩
-                SetOutputBrake(15);          // 满刹，停住
-            } else {
-                setAutoDirection(navDir);    // 不在本站：无条件前进
-                SetOutputBrake(0);           // 不下发刹车
-            }
             // 到站：物理车已经走完这段沿轨距离 → 告诉 Create
-            if (physicalDistanceTo(st) <= 1.5 && v < 0.5) {
+            if (legRemaining <= 0.05 && v < 0.5) {
                 HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车）", st.name);
-                try {
-                    nav.distanceToDestination = 0;
-                    var f2 = nav.getClass().getDeclaredField("currentPath");
-                    f2.setAccessible(true);
-                    ((java.util.List<?>) f2.get(nav)).clear();   // 照抄 Create：清路径
-                    train.arriveAt(st);
-                    nav.destination = null;                       // 照抄 Create：清目标，状态机才能推进
-                } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
+                try { train.arriveAt(st); } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
                 legRemaining = -1;
                 lastLegDest = null;
                 lastLegEntry = -1;
