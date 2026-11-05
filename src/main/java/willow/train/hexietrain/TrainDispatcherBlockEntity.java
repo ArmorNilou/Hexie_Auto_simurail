@@ -198,7 +198,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private int presenceTicks = 0;
     private long lastSendTick = -1;
     private int diagTicks = 0;
-    private GlobalStation dwellingStation = null;   // 停站锁：物理车没走就不再判到站
     private String lastDestName = "";
     private int lastEntryLogged = -1;
     private double pendingLeg = -1;   // Create 刚规划出的新段长度（在被我们写脏之前捕获）
@@ -629,7 +628,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 沿轨距离核减 + 物理到站。 */
     private double legRemaining = -1;
-    private int dwellTicks = -1;        // >=0 表示正在停站
     private Object lastLegDest = null;
     private int lastLegEntry = -1;
 
@@ -678,23 +676,15 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             if (train.derailed || train.invalid) return;
 
 
-            // 停站处理：到站后暂停时刻表，停够时间且速度归零再放行
-            if (dwellTicks >= 0) {
-                setAutoDirection(0f);
-                SetOutputBrake(15);
-                double vs = Math.abs(measuredSpeedMps());
-                dwellTicks++;
-                if (dwellTicks > 100 && vs < 0.2) {
-                    dwellingStation = null;
-                    dwellTicks = -1;
-                    try { train.runtime.paused = false; } catch (Throwable ignored) {}
-                    HexieTrain.LOGGER.info("[HexieTrain][depart] 停站完成 → 恢复时刻表");
-                } else {
+            var nav = train.navigation;
+            // 停站中（POST_TRANSIT / PRE_TRANSIT）：车停在站里，踩住刹车，让 Create 自己等条件
+            try {
+                if (train.runtime.state != com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT) {
+                    setAutoDirection(0f);
+                    SetOutputBrake(15);
                     return;
                 }
-            }
-
-            var nav = train.navigation;
+            } catch (Throwable ignored) {}
             if (nav == null || nav.destination == null) return;
             GlobalStation st = nav.destination;
 
@@ -727,9 +717,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车）", st.name);
                 try {
                     train.arriveAt(st);
-                    nav.destination = null;                 // 照抄 Create：清目标，状态机才能推进
-                    train.runtime.paused = true;            // 停站：暂停时刻表
-                    dwellTicks = 0;
+                    nav.destination = null;   // 照抄 Create：清目标，状态机才能推进
                 } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
                 legRemaining = -1;
                 lastLegDest = null;
@@ -963,7 +951,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         legRemaining = -1;
         lastLegDest = null;
         lastLegEntry = -1;
-        dwellingStation = null;
         lastDestName = "";
         lastEntryLogged = -1;
         autoDirection = 0f;
