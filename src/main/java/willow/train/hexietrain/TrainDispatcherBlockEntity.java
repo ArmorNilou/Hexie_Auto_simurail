@@ -693,15 +693,17 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
             // 扭矩：正常跟随导航；进入停站区则反转顶住（之前能停住的做法）
             float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
+            // 停车依据 = 物理车到站台点的真实距离（不是我们自己的 legRemaining）
+            double dPhys = physicalDistanceTo(st);
             double stopZone = Math.max(3.0, v * 1.2);
-            if (legRemaining <= stopZone) {
-                if (v > 0.4) setAutoDirection(-navDir);   // 还在滑行 → 反转扭矩制动
-                else         setAutoDirection(navDir);    // 已停住 → 继续爬，绝不掐扭矩
+            if (dPhys <= 1.5) {
+                setAutoDirection(0f);            // 到点：切断扭矩，车停在原地
+            } else if (dPhys <= stopZone) {
+                if (v > 0.4) setAutoDirection(-navDir);   // 近了还在滑 → 反转顶住
+                else         setAutoDirection(navDir);     // 停住了 → 慢慢爬进去
             } else {
                 setAutoDirection(navDir);
             }
-            if (legRemaining <= 0.05) setAutoDirection(0f);   // 真正到点才切断
-
             // 刹车：末端制导（越近越强）
             double brakeFrac = legRemaining >= stopZone ? 0.0 : 1.0 - legRemaining / stopZone;
             int brakeVal = (int) Math.round(15.0 * brakeFrac);
@@ -709,7 +711,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             SetOutputBrake(brakeVal);
 
             // 到站：物理车已经走完这段沿轨距离 → 告诉 Create
-            if (legRemaining <= 0.05 && v < 0.5) {
+            if (physicalDistanceTo(st) <= 1.5 && v < 0.5) {
                 HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车）", st.name);
                 try {
                     nav.distanceToDestination = 0;
