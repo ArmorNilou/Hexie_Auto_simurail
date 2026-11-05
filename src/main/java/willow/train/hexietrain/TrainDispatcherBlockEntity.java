@@ -365,6 +365,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         manualMode = value;
         if (level != null && !level.isClientSide && boundTrain != null) {
             Train train = Create.RAILWAYS.trains.get(boundTrain);
+            probe(train);
             if (train != null) {
                 try {
                     if (value) {
@@ -575,6 +576,65 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      * 虚拟列车不自走（speed 恒 0）：位置只由 TP 决定，到站由我们按物理车位置触发。
      * 这样它永远不可能跑在物理车前面，也就不会抢物理车前方的闭塞区间。
      */
+    // ══════════ 全参数探针（诊断用，不影响逻辑） ══════════
+
+    private int probeTicks = 0;
+
+    private void probe(Train train) {
+        if (probeTicks++ % 20 != 0) return;
+        StringBuilder b = new StringBuilder(520);
+        b.append("[probe] pos=").append(worldPosition.toShortString());
+        add(b, "primary", () -> String.valueOf(isPrimaryDispatcher()));
+        add(b, "manual", () -> String.valueOf(manualMode));
+        add(b, "slotEmpty", () -> String.valueOf(scheduleSlot.isEmpty()));
+        add(b, "bound", () -> boundTrain == null ? "-" : boundTrain.toString().substring(0, 8));
+        add(b, "tid", () -> train == null ? "-" : train.id.toString().substring(0, 8));
+        if (train != null) {
+            add(b, "speed", () -> ff(train.speed));
+            add(b, "tgtSpeed", () -> ff(train.targetSpeed));
+            add(b, "derail", () -> String.valueOf(train.derailed));
+            add(b, "curSt", () -> { var c = train.getCurrentStation(); return c == null ? "-" : String.valueOf(c.name); });
+            add(b, "state", () -> String.valueOf(train.runtime.state));
+            add(b, "entry", () -> train.runtime.currentEntry + "/" + (train.runtime.schedule == null ? -1 : train.runtime.schedule.entries.size()));
+            add(b, "paused", () -> String.valueOf(train.runtime.paused));
+            add(b, "conds", () -> { var rt = train.runtime; if (rt.schedule == null || rt.currentEntry < 0 || rt.currentEntry >= rt.schedule.entries.size()) return "-"; return String.valueOf(rt.schedule.entries.get(rt.currentEntry).conditions.size()); });
+            add(b, "prog", () -> String.valueOf(train.runtime.conditionProgress));
+            var nv = train.navigation;
+            add(b, "dest", () -> nv.destination == null ? "-" : String.valueOf(nv.destination.name));
+            add(b, "dDest", () -> ff(nv.distanceToDestination));
+            add(b, "dSig", () -> ff(nv.distanceToSignal));
+            add(b, "behind", () -> String.valueOf(nv.destinationBehindTrain));
+            add(b, "waitSig", () -> nv.waitingForSignal == null ? "-" : "Y");
+            add(b, "pathN", () -> { try { var fl = nv.getClass().getDeclaredField("currentPath"); fl.setAccessible(true); return String.valueOf(((java.util.List<?>) fl.get(nv)).size()); } catch (Throwable t) { return "ERR"; } });
+        }
+        add(b, "vphys", () -> ff(measuredSpeedMps()));
+        add(b, "vtrack", () -> ff(bodySpeedAlongTrackBps()));
+        add(b, "leg", () -> ff(legRemaining));
+        add(b, "pendingLeg", () -> ff(pendingLeg));
+        add(b, "lastEntry", () -> String.valueOf(lastLegEntry));
+        add(b, "autoDir", () -> String.valueOf(autoDirection));
+        add(b, "dwell", () -> dwellingStation == null ? "-" : String.valueOf(dwellingStation.name));
+        add(b, "dPhys", () -> { try { var d = train == null ? null : train.navigation.destination; return d == null ? "-" : ff(physicalDistanceTo(d)); } catch (Throwable t) { return "ERR"; } });
+        add(b, "brakeCh", () -> String.valueOf(output(SignalChannel.BRAKE)));
+        add(b, "leftCh", () -> String.valueOf(output(SignalChannel.LEFT)));
+        add(b, "rightCh", () -> String.valueOf(output(SignalChannel.RIGHT)));
+        add(b, "bsL", () -> String.valueOf(getBlockState().getValue(TrainDispatcherBlock.LEFT_POWERED)));
+        add(b, "bsR", () -> String.valueOf(getBlockState().getValue(TrainDispatcherBlock.RIGHT_POWERED)));
+        add(b, "rsL", () -> String.valueOf(leftSignal()));
+        add(b, "rsR", () -> String.valueOf(rightSignal()));
+        add(b, "hasSrc", () -> String.valueOf(hasSource()));
+        add(b, "srcFace", () -> { try { return String.valueOf(getSourceFacing()); } catch (Throwable t) { return "-"; } });
+        add(b, "leftIsFwd", () -> String.valueOf(leftIsForward));
+        HexieTrain.LOGGER.info(b.toString());
+    }
+
+    private static String ff(double d) { return String.format("%.2f", d); }
+
+    private static void add(StringBuilder b, String key, java.util.function.Supplier<String> s) {
+        b.append(" ").append(key).append("=");
+        try { b.append(s.get()); } catch (Throwable t) { b.append("ERR:").append(t.getClass().getSimpleName()); }
+    }
+
     private void driveToStation(Train train) {
         try {
             train.speed = 0;        // ★ 不自走
