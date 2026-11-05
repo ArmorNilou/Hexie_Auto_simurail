@@ -677,6 +677,22 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
 
             var nav = train.navigation;
+            // 判据：我当前所在的站 ≠ 导航目标站 → 无视一切停车指令，强制继续前进
+            try {
+                GlobalStation curSt = train.getCurrentStation();
+                GlobalStation tgtSt = train.navigation.destination;
+                if (curSt != null && tgtSt != null
+                        && curSt != tgtSt
+                        && !String.valueOf(curSt.name).equals(String.valueOf(tgtSt.name))) {
+                    float dirAway = (float) (train.navigation.destinationBehindTrain ? -1.0 : 1.0);
+                    setAutoDirection(dirAway);
+                    SetOutputBrake(0);
+                    HexieTrain.LOGGER.info("[HexieTrain][wrongStation] 当前在 {} 但目标 {} → 无视停车，继续前进",
+                            curSt.name, tgtSt.name);
+                    return;
+                }
+            } catch (Throwable ignored) {}
+
             // 停站中（POST_TRANSIT / PRE_TRANSIT）：车停在站里，踩住刹车，让 Create 自己等条件
             try {
                 if (train.runtime.state != com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT) {
