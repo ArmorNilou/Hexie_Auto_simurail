@@ -706,6 +706,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             add(b, "path", () -> { try { var fl = nv.getClass().getDeclaredField("currentPath"); fl.setAccessible(true); return String.valueOf(((java.util.List<?>) fl.get(nv)).size()); } catch (Throwable t) { return "ERR"; } });
         }
         add(b, "vphys", () -> f(measuredSpeedMps()));
+        add(b, "dPhys", () -> { try { var d = train.navigation.destination; return d == null ? "-" : f(physicalDistanceTo(d)); } catch (Throwable t) { return "ERR"; } });
         add(b, "vtrack", () -> f(bodySpeedAlongTrackBps()));
         add(b, "leg", () -> f(legRemaining));
         add(b, "autoDir", () -> String.valueOf(autoDirection));
@@ -794,10 +795,15 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             SetOutputBrake(brakeVal);
 
             // 到站：物理车已经走完这段沿轨距离 → 告诉 Create
-            if (dNav <= 0.5 && v < 0.3) {
+            // 到站判定：物理车真的停在站台旁（短距离下欧氏距离是准的；长距离才用沿轨）
+            double dNear = physicalDistanceTo(st);
+            if (dNear <= 2.0 && v <= 0.3) {
                 HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车）", st.name);
                 try {
                     train.arriveAt(st);
+                    nav.distanceToDestination = 0;
+                    try { var f2 = nav.getClass().getDeclaredField("currentPath"); f2.setAccessible(true); ((java.util.List<?>) f2.get(nav)).clear(); } catch (Throwable ignored) {}
+                    nav.destination = null;   // ★ 不清这行，ScheduleRuntime.tick 会一直 return
                     nav.destination = null;   // 照抄 Create：清目标，状态机才能推进
                 } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
                 legRemaining = -1;
