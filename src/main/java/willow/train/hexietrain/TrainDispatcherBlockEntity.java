@@ -467,6 +467,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][diag] {}", t.toString()); }
 
             if (!isDriver()) return;   // 非认领者不得驱动
+            syncScheduleFromItem(train);   // 物品改了表 → 立刻重新应用
             // POST_TRANSIT 卡死兜底：条件列为空时 tickConditions 永不推进
             try {
                 var rt0 = train.runtime;
@@ -586,6 +587,34 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      * 虚拟列车不自走（speed 恒 0）：位置只由 TP 决定，到站由我们按物理车位置触发。
      * 这样它永远不可能跑在物理车前面，也就不会抢物理车前方的闭塞区间。
      */
+    /**
+     * 物品里的时刻表若与列车 runtime 里的不一致，就重新应用。
+     *
+     * <p>setSchedule 只在建车时复制一份进列车，之后编辑物品不会自动同步；
+     * 这里做差异检测，保证 UI 改了目标站后导航立刻跟着变。
+     */
+    private void syncScheduleFromItem(Train train) {
+        if (level == null || level.isClientSide || scheduleSlot.isEmpty() || train == null) return;
+        try {
+            var itemSched = ScheduleItem.getSchedule(level.registryAccess(), scheduleSlot);
+            if (itemSched == null) return;
+            var rt = train.runtime;
+            boolean same = false;
+            if (rt.schedule != null) {
+                same = rt.schedule.entries.size() == itemSched.entries.size()
+                        && rt.schedule.cyclic == itemSched.cyclic
+                        && rt.schedule.write(level.registryAccess()).equals(itemSched.write(level.registryAccess()));
+            }
+            if (same) return;
+            itemSched.savedProgress = rt.schedule == null ? 0 : rt.currentEntry;
+            rt.setSchedule(itemSched, false);
+            rt.paused = false;
+            legRemaining = -1; lastLegDest = null; lastLegEntry = -1; pendingLeg = -1;
+            HexieTrain.LOGGER.info("[HexieTrain][sched] 时刻表已更新，重新应用（{} 条，cyclic={}）",
+                    itemSched.entries.size(), itemSched.cyclic);
+        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][sched] {}", t.toString()); }
+    }
+
     private void driveToStation(Train train) {
         try {
             train.speed = 0;        // ★ 不自走
