@@ -165,6 +165,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      */
     private boolean isDriver() {
         if (boundTrain == null) return false;
+        if (level == null || level.isClientSide) return false;   // 客户端实例不得认领驱动权
         TrainDispatcherBlockEntity cur = TRAIN_OWNER.get(boundTrain);
         if (cur == this) return true;
         if (cur == null) {
@@ -452,6 +453,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 由 DispatcherTicker 每 tick 调用。 */
     public void serverTick() {
+        if (level == null || level.isClientSide) return;   // 客户端不跑任何逻辑
         updateMeasuredSpeed();
         try {
             if (boundTrain != null && !Create.RAILWAYS.trains.containsKey(boundTrain)) {
