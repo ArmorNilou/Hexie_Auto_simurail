@@ -435,6 +435,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private void tickAutomated() {
         try {
             Train train = Create.RAILWAYS.trains.get(boundTrain);
+            if (!isDriver()) return;   // 非驱动者什么都不做（不写状态、不刷日志）
             if (train == null) return;
             ensureConductors(train);
 
@@ -616,7 +617,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         try {
             train.speed = 0;        // ★ 不自走
             train.targetSpeed = 0;
-            if (train.derailed || train.invalid || !isDriver()) return;
+            if (train.derailed || train.invalid) return;
 
             var nav = train.navigation;
             if (nav == null || nav.destination == null) return;
@@ -653,14 +654,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double brakeFrac = dLeft >= stopZone ? 0.0 : 1.0 - dLeft / stopZone;   // 0→1，越近越强
             int brakeVal = (int) Math.round(15.0 * brakeFrac);
             if (dLeft < 1.0) brakeVal = 15;                                        // 1 格内最强刹
-            if (legRemaining <= stopZone) {
-                if (Math.abs(measuredSpeedMps()) > 0.4)
-                    setAutoDirection((float) -(nav.destinationBehindTrain ? -1.0 : 1.0));   // 反转扭矩制动
-                else
-                    setAutoDirection(0f);                                                    // 停稳后切断
-            } else {
-                setAutoDirection((float) (nav.destinationBehindTrain ? -1.0 : 1.0));
-            }
+            // 扭矩永远跟随导航（不再用扭矩当刹车，避免"停了却不到站"的死锁）
+            float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
+            setAutoDirection(navDir);
+            // 仅在"已经很近且还在滑行"时短暂反转辅助制动
+            if (legRemaining < 1.0 && Math.abs(measuredSpeedMps()) > 0.5) setAutoDirection(-navDir);
 
             // ④ 刹车
             double targetV = legRemaining > SLOW_ZONE_BLOCKS ? Double.MAX_VALUE
