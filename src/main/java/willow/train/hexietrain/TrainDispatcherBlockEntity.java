@@ -691,13 +691,17 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double v = Math.abs(measuredSpeedMps());
             legRemaining = Math.max(0.0, legRemaining - v / 20.0);
 
-            // 扭矩永远跟随导航；很近距离且仍在滑行时短暂反转辅助制动
+            // 扭矩：正常跟随导航；进入停站区则反转顶住（之前能停住的做法）
             float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
-            setAutoDirection(navDir);
-            if (legRemaining < 1.0 && v > 0.5) setAutoDirection(-navDir);
+            double stopZone = Math.max(3.0, v * 1.2);
+            if (legRemaining <= stopZone) {
+                if (v > 0.4) setAutoDirection(-navDir);   // 反转扭矩制动
+                else         setAutoDirection(0f);        // 停稳后切断
+            } else {
+                setAutoDirection(navDir);
+            }
 
             // 刹车：末端制导（越近越强）
-            double stopZone = Math.max(3.0, v * 1.2);
             double brakeFrac = legRemaining >= stopZone ? 0.0 : 1.0 - legRemaining / stopZone;
             int brakeVal = (int) Math.round(15.0 * brakeFrac);
             if (legRemaining < 1.0) brakeVal = 15;
@@ -706,7 +710,14 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             // 到站：物理车已经走完这段沿轨距离 → 告诉 Create
             if (legRemaining <= 0.05 && v < 0.5) {
                 HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车）", st.name);
-                try { train.arriveAt(st); } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
+                try {
+                    nav.distanceToDestination = 0;
+                    var f2 = nav.getClass().getDeclaredField("currentPath");
+                    f2.setAccessible(true);
+                    ((java.util.List<?>) f2.get(nav)).clear();   // 照抄 Create：清路径
+                    train.arriveAt(st);
+                    nav.destination = null;                       // 照抄 Create：清目标，状态机才能推进
+                } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
                 legRemaining = -1;
                 lastLegDest = null;
                 lastLegEntry = -1;
