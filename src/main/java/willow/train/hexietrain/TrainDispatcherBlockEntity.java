@@ -426,21 +426,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 由 DispatcherTicker 每 tick 调用。 */
     public void serverTick() {
-        // 唯一所有者：按【物理结构 UUID】认领——同一结构只允许一个实例写输出
-        if (assemblyId == null && level instanceof ServerLevel slOwn) {
-            try { var subOwn = SubLevelSuspend.containing(slOwn, worldPosition); if (subOwn != null) assemblyId = subOwn.getUniqueId(); } catch (Throwable ignored) {}
-        }
-        if (assemblyId != null) {
-            TrainDispatcherBlockEntity owner = STRUCT_OWNER.get(assemblyId);
-            if (owner == null) { STRUCT_OWNER.put(assemblyId, this); owner = this; }
-            if (owner != this) {
-                if (owner.isRemoved() || owner.getLevel() == null || owner.level == null) {
-                    STRUCT_OWNER.put(assemblyId, this);
-                } else {
-                    return;   // 非所有者：一个输出都不写
-                }
-            }
-        }
         // 探针：进入 serverTick 的最外层事实（在任何判定之前）
         if (entryProbeTicks++ % 20 == 0) {
             HexieTrain.LOGGER.info("[HexieTrain][entry] level={} remote={} slotEmpty={} bound={} pos={}",
