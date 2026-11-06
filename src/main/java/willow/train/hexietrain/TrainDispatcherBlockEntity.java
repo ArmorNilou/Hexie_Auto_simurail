@@ -201,6 +201,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 绑定的列车；null = 手动模式。 */
     private UUID boundTrain;
+    private int entryProbeTicks = 0;
     private UUID assemblyId;          // 所在物理结构 UUID
     private UUID persistentTrainId;    // 该结构专属的虚拟列车 UUID
 
@@ -422,6 +423,15 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 由 DispatcherTicker 每 tick 调用。 */
     public void serverTick() {
+        // 探针：进入 serverTick 的最外层事实（在任何判定之前）
+        if (entryProbeTicks++ % 20 == 0) {
+            HexieTrain.LOGGER.info("[HexieTrain][entry] level={} remote={} slotEmpty={} bound={} pos={}",
+                    level == null ? "null" : level.getClass().getSimpleName(),
+                    (level != null && level.isClientSide),
+                    scheduleSlot.isEmpty(),
+                    boundTrain == null ? "-" : boundTrain.toString().substring(0, 8),
+                    worldPosition.toShortString());
+        }
         updateMeasuredSpeed();
         try {
             if (boundTrain != null && !Create.RAILWAYS.trains.containsKey(boundTrain)) {
