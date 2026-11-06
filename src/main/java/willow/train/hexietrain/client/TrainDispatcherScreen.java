@@ -124,11 +124,12 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
 
         // 右上角 = 驾驶模式按钮（未绑定时只显示状态）
         String badge;
-        if (menu.manualMode()) {
-            badge = "玩家操控中";
-        } else if (!menu.bound()) {
+        if (menu.unbound()) {
             badge = "未绑定";
+        } else if (menu.manualMode()) {
+            badge = "玩家操控中";
         } else {
+            badge = "自动驾驶中";
             badge = "自动驾驶中";
         }
         int badgeColor = menu.manualMode() ? 0xFFB4632A

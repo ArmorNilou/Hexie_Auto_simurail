@@ -22,6 +22,7 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
     public static final int DATA_BRAKE = 0;
     public static final int DATA_LEFT = 1;
     public static final int DATA_RIGHT = 2;
+    public static final int DATA_UNBOUND = 3;
     public static final int DATA_BOUND = 4;
     public static final int DATA_DISTANCE = 7;
     public static final int DATA_STOP_COUNT = 9;
@@ -127,6 +128,7 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
         HexieTrain.LOGGER.info("[HexieTrain][ui] 打开界面：站点数={} 当前条目={}",
                 blockEntity.stopNames().size(), blockEntity.currentEntry());
         cached[DATA_MANUAL_MODE] = blockEntity.manualMode() ? 1 : 0;
+        cached[DATA_UNBOUND] = blockEntity.isUnbound() ? 1 : 0;
         cached[DATA_CURRENT_ENTRY] = blockEntity.currentEntry();
         cached[DATA_DISPATCHER_STATE] = blockEntity.dispatcherState().ordinal();
         cached[DATA_SENSOR_SPEED] = blockEntity.measuredSpeedCenti();
@@ -165,6 +167,7 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
     public int distance()      { return data.get(DATA_DISTANCE); }
     public int stopCount()      { return data.get(DATA_STOP_COUNT); }
     public boolean manualMode() { return data.get(DATA_MANUAL_MODE) != 0; }
+    public boolean unbound() { return data.get(DATA_UNBOUND) != 0; }
     public int currentEntry() { return data.get(DATA_CURRENT_ENTRY); }
     public int dispatcherState() { return data.get(DATA_DISPATCHER_STATE); }
     public int sensorSpeedCenti() { return data.get(DATA_SENSOR_SPEED); }
