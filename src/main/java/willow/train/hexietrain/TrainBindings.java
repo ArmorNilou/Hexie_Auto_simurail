@@ -31,8 +31,13 @@ public final class TrainBindings {
 
     private TrainBindings() {}
 
-    /** 世界存档根目录：反射取 getWorldPath(ROOT)，失败则退回 saves 根。 */
+    /**
+     * 世界存档目录。三条路径依次尝试，**永不退回 saves 根目录**：
+     * ① getWorldPath(ROOT)  ② getWorldData().getLevelName() 拼 saves/<世界名>  ③ saves/hexie（兜底子目录）
+     */
     private static Path worldDir(ServerLevel level) {
+        Path saves = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve("saves");
+        // ① getWorldPath(LevelResource.ROOT)
         try {
             var m = level.getServer().getClass().getMethod("getWorldPath",
                     Class.forName("net.minecraft.world.level.storage.LevelResource"));
@@ -41,7 +46,14 @@ public final class TrainBindings {
             Object p = m.invoke(level.getServer(), root);
             if (p instanceof Path path) return path;
         } catch (Throwable ignored) {}
-        return net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve("saves");
+        // ② saves/<世界名>
+        try {
+            Object wd = level.getServer().getClass().getMethod("getWorldData").invoke(level.getServer());
+            Object name = wd.getClass().getMethod("getLevelName").invoke(wd);
+            if (name instanceof String s && !s.isBlank()) return saves.resolve(s);
+        } catch (Throwable ignored) {}
+        // ③ 兜底：saves/hexie（不在根目录放文件）
+        return saves.resolve("hexie");
     }
 
     private static Path file(ServerLevel level) {
@@ -53,7 +65,7 @@ public final class TrainBindings {
         try {
             Path f = file(level);
             if (!Files.exists(f)) return map;
-            for (String line : Files.readAllLines(f)) {
+            for (String line : Files.readAllLines(f, java.nio.charset.StandardCharsets.UTF_8)) {
                 String s = line.trim();
                 if (s.isEmpty() || s.startsWith("#")) continue;
                 int i = s.indexOf('=');
@@ -68,7 +80,7 @@ public final class TrainBindings {
             List<String> lines = new ArrayList<>();
             lines.add("# hexie train bindings & state");
             map.forEach((k, v) -> lines.add(k + "=" + v));
-            Files.write(file(level), lines);
+            Files.write(file(level), lines, java.nio.charset.StandardCharsets.UTF_8);
         } catch (Throwable t) {
             HexieTrain.LOGGER.warn("[HexieTrain][bind] 写绑定文件失败: {}", t.toString());
         }
