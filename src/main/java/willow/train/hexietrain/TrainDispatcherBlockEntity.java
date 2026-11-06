@@ -375,6 +375,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         if (level != null && !level.isClientSide && boundTrain != null) {
             Train train = Create.RAILWAYS.trains.get(boundTrain);
             probe(train);
+            probe(train);
             if (train != null) {
                 try {
                     if (value) {
@@ -643,6 +644,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         b.append(" ").append(key).append("=");
         try { b.append(s.get()); } catch (Throwable t) { b.append("ERR:").append(t.getClass().getSimpleName()); }
     }
+
+    // ══════════ 全参数探针 ══════════
+
 
     private void driveToStation(Train train) {
         try {
