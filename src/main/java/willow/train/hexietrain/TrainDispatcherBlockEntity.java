@@ -1067,7 +1067,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             TrainBinder.OUR_TRAINS.add(boundTrain);
             HexieTrain.LOGGER.info("[HexieTrain] 从存档恢复列车绑定 {}", boundTrain);
         }
-        manualMode = tag.getBoolean("ManualMode");
+        manualMode = false;   // 手操是运行时状态，不跨存档恢复：否则会卡在手操，自动永不接管
         owner = tag.hasUUID("Owner") ? tag.getUUID("Owner") : null;
         // 方块特性：制动灵敏度（缺省 3.0 格/秒²）
 
