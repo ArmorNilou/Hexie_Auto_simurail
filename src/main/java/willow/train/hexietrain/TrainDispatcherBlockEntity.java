@@ -564,7 +564,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      */
     private void writeStructureFile(ServerLevel sl, UUID structure, UUID train) {
         try {
-            java.nio.file.Path dir = java.nio.file.Paths.get("physic_train");
+            java.nio.file.Path dir = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve("physic_train");   // 游戏(version)目录下的 physic_train
             java.nio.file.Files.createDirectories(dir);
             java.nio.file.Path file = dir.resolve(structure.toString() + ".txt");
             StringBuilder sb = new StringBuilder();
