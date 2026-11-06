@@ -1,24 +1,24 @@
 package willow.train.hexietrain;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 /**
- * 调度台全局驱动器。
+ * 调度台的全局驱动器。
  *
- * <p>去重有明确优先级（低→高）：
- * <ol>
- *   <li>已移除 / 没有 level / 客户端实例 —— 直接剔除</li>
- *   <li>活着但没有状态（无时刻表、无绑定、无列车）</li>
- *   <li>活着且持有状态（有时刻表/持久列车 UUID/已绑定列车）</li>
- * </ol>
- * 同坐标只保留优先级最高的那个，并且**一定要 tick 保留下来的那个**。
+ * <p>方块实体自己的 tick() 只在区块/子结构被正常 tick 时才调用，
+ * 而我们的方块经常待在 Sable 的绘图区子结构里，不保证被 tick。
+ * 所以所有逻辑都从服务器全局 tick 事件驱动。
+ *
+ * <p>注意：ACTIVE 是强引用集合，方块被卸载时不一定有人调 remove()，
+ * 于是同一位置的旧实例会残留并继续 tick（两个副本各写一份状态）。
+ * 这里每 tick 做两件事：剔除失效实例、按坐标去重。
  */
 @EventBusSubscriber(modid = HexieTrain.MOD_ID, bus = EventBusSubscriber.Bus.GAME)
 public final class DispatcherTicker {
@@ -27,48 +27,29 @@ public final class DispatcherTicker {
 
     @SubscribeEvent
     public static void onServerTick(ServerTickEvent.Post event) {
-        var active = TrainDispatcherBlockEntity.activeDispatchers();
+        Set<TrainDispatcherBlockEntity> active = TrainDispatcherBlockEntity.activeDispatchers();
         List<TrainDispatcherBlockEntity> snapshot = new ArrayList<>(active);
+        Set<Long> seen = new HashSet<>();
 
-        // ① 先剔除无效实例
-        for (var be : snapshot) {
-            if (be.isRemoved() || be.getLevel() == null || be.getLevel().isClientSide)
-                active.remove(be);
-        }
-
-        // ② 按坐标分组，保留优先级最高的
-        Map<Long, TrainDispatcherBlockEntity> keeper = new HashMap<>();
-        for (var be : snapshot) {
-            if (!active.contains(be)) continue;
-            long key = ((long) be.getLevel().dimension().location().hashCode() << 32)
-                    ^ be.getBlockPos().asLong();
-            var prev = keeper.get(key);
-            if (prev == null) {
-                keeper.put(key, be);
-            } else if (priority(be) > priority(prev)) {
-                active.remove(prev);
-                keeper.put(key, be);
-            } else {
-                active.remove(be);
-            }
-        }
-
-        // ③ 保留下来的实例必须 tick
-        for (var be : keeper.values()) {
+        for (TrainDispatcherBlockEntity be : snapshot) {
             try {
+                // ① 剔除失效实例
+                if (be.isRemoved() || be.getLevel() == null) {   // 不再用 isLoaded：方块位于 Sable 绘图区坐标，isLoaded 恒为 false
+                    active.remove(be);
+                    continue;
+                }
+                // ② 同一坐标只保留一个实例
+                long key = ((long) be.getLevel().dimension().location().hashCode() << 32)
+                        ^ be.getBlockPos().asLong();
+                if (!seen.add(key)) {
+                    active.remove(be);
+                    HexieTrain.LOGGER.info("[HexieTrain][dedupe] 移除重复调度台实例 @{}", be.getBlockPos());
+                    continue;
+                }
                 be.serverTick();
             } catch (Throwable t) {
                 HexieTrain.LOGGER.error("[HexieTrain] 调度台 tick 异常 @{}", be.getBlockPos(), t);
             }
         }
-    }
-
-    /** 越大越优先保留。 */
-    private static int priority(TrainDispatcherBlockEntity be) {
-        int p = 0;
-        if (!be.scheduleSlot().isEmpty()) p += 4;          // 有时刻表
-        if (be.boundTrain() != null) p += 2;               // 已绑定列车
-        if (be.persistentTrainId() != null) p += 1;        // 已持久化 UUID
-        return p;
     }
 }

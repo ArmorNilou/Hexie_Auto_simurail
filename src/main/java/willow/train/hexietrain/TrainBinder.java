@@ -233,20 +233,7 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
             return Result.fail("无法从物理结构构造车厢");
         }
         // ⑤ 建车
-        // 物理结构 ↔ 列车 UUID 持久绑定：先查表，没有才生成
-        UUID trainId = null;
-        if (trainId == null) trainId = TrainDispatcherBlockEntity.pendingTrainId(level, dispatcherPos);   // 优先用方块已绑定的 UUID
-        try {
-            if (subLevelId != null) trainId = TrainBindingData.get(level).trainOf(subLevelId);
-            if (trainId != null) HexieTrain.LOGGER.info("[HexieTrain][bind] 复用既有列车 UUID {}", trainId);
-        } catch (Throwable ignored) {}
-        if (trainId == null) {
-            trainId = UUID.randomUUID();
-            try {
-                if (subLevelId != null) TrainBindingData.get(level).bind(subLevelId, trainId);
-                HexieTrain.LOGGER.info("[HexieTrain][bind] 新建列车 UUID {} 并写入绑定存档", trainId);
-            } catch (Throwable ignored) {}
-        }
+        UUID trainId = UUID.randomUUID();
         UUID owner = UUID.randomUUID();
         Train train;
         try {

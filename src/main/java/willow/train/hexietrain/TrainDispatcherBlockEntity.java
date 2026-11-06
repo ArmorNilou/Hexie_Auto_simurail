@@ -138,8 +138,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private float autoDirection = 0f;
     /** 方块的"左"是否就是虚拟列车定义的前进方向（绑定/放置时一次判定，之后不变）。 */
     private Boolean leftIsForward = null;
-    private boolean polarityFixed = false;   // 方向极性是否已锁定
-    private int dirAgreeTicks = 0;          // 连续一致/相反的 tick 计数
 
     /** 输出传动比 0~1：视距内按加速度渐变到 1，视距外直接用二进制。 */
     private float outputRatio = 0f;
@@ -203,8 +201,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 绑定的列车；null = 手动模式。 */
     private UUID boundTrain;
-    private UUID assemblyId;          // 物理子结构 UUID（放置时确定）
-    private UUID persistentTrainId;    // 与该结构绑死的列车 UUID（放置时生成并写存档）
 
     /** 放置这个方块的玩家 —— 列车拥有者。 */
     private UUID owner;
@@ -423,7 +419,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 由 DispatcherTicker 每 tick 调用。 */
     public void serverTick() {
-        ensureBinding();   // 放置方块即确定物理结构 UUID 并绑定列车 UUID
         updateMeasuredSpeed();
         try {
             if (boundTrain != null && !Create.RAILWAYS.trains.containsKey(boundTrain)) {
@@ -500,6 +495,41 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         if (manual != manualMode) { manualMode = manual; setChanged(); sendData(); }
     }
 
+    /**
+     * 一次判定：方块的"左"是否等于虚拟列车的前进方向。
+     * 依据 Simurail 转向架：getMovementSpeed() 已是整条传动链累乘后的行驶速度，
+     * 乘上 getDirection() 再投影到轨道切线，就是"这组输出让车沿轨道往哪走"。
+     */
+    private boolean leftPolarity() {
+        if (leftIsForward != null) return leftIsForward;
+        leftIsForward = true;
+        try {
+            Train train = Create.RAILWAYS.trains.get(boundTrain);
+            if (train == null || train.carriages.isEmpty() || !(level instanceof ServerLevel sl)) return true;
+            var lp = train.carriages.get(0).getLeadingPoint();
+            if (lp == null || lp.edge == null) return true;
+            var tan = lp.edge.getDirection(true);
+            double best = 0;
+            for (net.minecraft.core.BlockPos bp : net.minecraft.core.BlockPos.betweenClosed(
+                    worldPosition.offset(-6, -4, -6), worldPosition.offset(6, 4, 6))) {
+                var be = sl.getBlockEntity(bp);
+                if (be == null || !be.getClass().getName().contains("PhysicsBogeyBlockEntity")) continue;
+                try {
+                    double ms = (double) be.getClass().getMethod("getMovementSpeed").invoke(be);
+                    var dir = (org.joml.Vector3dc) be.getClass().getMethod("getDirection").invoke(be);
+                    double dot = ms * (dir.x() * tan.x + dir.y() * tan.y + dir.z() * tan.z);
+                    if (Math.abs(dot) > Math.abs(best)) best = dot;
+                } catch (Throwable ignored) {}
+            }
+            if (Math.abs(best) > 1.0E-4) {
+                leftIsForward = best > 0;
+                HexieTrain.LOGGER.info("[HexieTrain][dir] dot={} 左是前进={}", String.format("%.3f", best), leftIsForward);
+            } else {
+                HexieTrain.LOGGER.info("[HexieTrain][dir] 转向架速度为 0，沿用默认 左是前进=true");
+            }
+        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][dir] {}", t.toString()); }
+        return leftIsForward;
+    }
 
     /**
      * 自动模式的传动输出。只在 !manualMode 时调用，因此 blockstate 所有权是互斥的：
@@ -514,7 +544,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private void setAutoDirection(float dir) {
         if (Math.abs(dir - autoDirection) < 1.0E-4f) return;
         autoDirection = dir;
-            boolean pol = (leftIsForward == null) ? true : leftIsForward;   // 唯一判定源：速度矢量 vs 导航方向
+        boolean pol = leftPolarity();
         boolean forward = dir > 0.001f, reverse = dir < -0.001f;
         boolean left  = forward ? pol : (reverse ? !pol : false);
         boolean right = forward ? !pol : (reverse ? pol : false);
@@ -549,51 +579,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     // ══════════ 全参数探针（诊断用，不影响逻辑） ══════════
 
     private int probeTicks = 0;
-    /** 供 TrainBinder 查询：该位置方块已绑定的列车 UUID（没有则 null）。 */
-    /** 供 ticker 判断优先级用。 */
-    public UUID persistentTrainId() { return persistentTrainId; }
-
-    public static UUID pendingTrainId(ServerLevel level, net.minecraft.core.BlockPos pos) {
-        try {
-            if (level.getBlockEntity(pos) instanceof TrainDispatcherBlockEntity be) return be.persistentTrainId;
-        } catch (Throwable ignored) {}
-        return null;
-    }
-
-    /**
-     * 每 tick 校验：调度器所在的物理结构 UUID 是否还成立。
-     * 结构消失 / 被重组（UUID 变了）→ 抹除旧列车与旧绑定，采用新 UUID。
-     */
-    private void ensureBinding() {
-        if (!(level instanceof ServerLevel sl) || sl.isClientSide) return;
-        try {
-            var sub = SubLevelSuspend.containing(sl, worldPosition);
-            UUID now = (sub == null) ? null : sub.getUniqueId();
-            if (now == null) {
-                if (assemblyId != null) {
-                    HexieTrain.LOGGER.info("[HexieTrain][bind] 所在物理结构已不存在 → 抹除绑定与列车");
-                    dissolve();
-                    assemblyId = null;
-                    persistentTrainId = null;
-                    setChanged();
-                }
-                return;
-            }
-            if (assemblyId == null) {
-                assemblyId = now;
-                setChanged();
-            } else if (!assemblyId.equals(now)) {
-                HexieTrain.LOGGER.info("[HexieTrain][bind] 物理结构被重组 {} → {}，重置绑定", assemblyId, now);
-                dissolve();
-                assemblyId = now;
-                persistentTrainId = null;
-                setChanged();
-            }
-        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][bind] 校验失败: {}", t.toString()); }
-    }
-
-
-
 
     private void probe(Train train) {
         if (probeTicks++ % 20 != 0) return;
@@ -684,34 +669,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 if (dd > 8.0) { dwellingStation = null; HexieTrain.LOGGER.info("[HexieTrain][depart] 物理车已离开 {}", st.name); }
                 return;
             }
-
-            // ★ 方向判定（唯一来源）：速度矢量 与 导航目标 的一致性
-            // 连续 10 tick 一致/相反才动作，避免起步抖动期误锁。
-            try {
-                double vt   = bodySpeedAlongTrackBps();
-                double want = nav.destinationBehindTrain ? -1.0 : 1.0;
-                if (!polarityFixed) {
-                    if (Math.abs(vt) > 0.8) {
-                        if (Math.signum(vt) != Math.signum(want)) {
-                            if (--dirAgreeTicks <= -10) {
-                                boolean cur = (leftIsForward == null) ? true : leftIsForward;
-                                leftIsForward = !cur;
-                                polarityFixed = true;
-                                HexieTrain.LOGGER.info("[HexieTrain][dir] 连续 10 tick 逆行(vtrack={}, want={}) → 翻转极性 leftIsForward={}",
-                                        String.format("%.2f", vt), want, leftIsForward);
-                            }
-                        } else {
-                            if (++dirAgreeTicks >= 10) {
-                                polarityFixed = true;
-                                HexieTrain.LOGGER.info("[HexieTrain][dir] 连续 10 tick 一致(vtrack={}, want={}) → 极性正确，锁定",
-                                        String.format("%.2f", vt), want);
-                            }
-                        }
-                    } else {
-                        dirAgreeTicks = 0;   // 速度不足，重新计
-                    }
-                }
-            } catch (Throwable ignored) {}
 
             // ③b 传动方向：驱动本方块自己的左右红石通道（自动模式的唯一动力来源）
             double stopZone = Math.max(STOP_ZONE, Math.abs(measuredSpeedMps()) * 1.2);   // 按速度动态
@@ -912,29 +869,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      * 放入时刻表 / 切回自动 → 建车；取出时刻表 / 切手动 / 玩家给红石 → 注销并归零。
      */
     /** 真正建车的私有动作，只被 syncTrainPresence 调用。 */
-    /** 放入时刻表时调用：查/建该物理结构专属的列车 UUID，并写入绑定存档。 */
-    private UUID ensureTrainId() {
-        if (!(level instanceof ServerLevel sl) || sl.isClientSide) return null;
-        if (persistentTrainId != null) return persistentTrainId;
-        try {
-            if (assemblyId == null) ensureBinding();
-            if (assemblyId == null) return null;
-            var data = TrainBindingData.get(sl);
-            UUID existing = data.trainOf(assemblyId);
-            if (existing != null) {
-                persistentTrainId = existing;
-            } else {
-                persistentTrainId = UUID.randomUUID();
-                data.bind(assemblyId, persistentTrainId);
-            }
-            setChanged();
-        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][bind] 创建列车 UUID 失败: {}", t.toString()); }
-        return persistentTrainId;
-    }
-
     private void bindTrainNow() {
         if (!(level instanceof ServerLevel serverLevel)) return;
-        ensureTrainId();   // 放入时刻表：先确保专属列车 UUID 已绑定
         try {
             TrainBinder.Result result = TrainBinder.bind(serverLevel, worldPosition, scheduleSlot, owner);
             lastBindMessage = result.message();
@@ -1035,8 +971,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     protected void write(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.write(tag, registries, clientPacket);
         if (boundTrain != null) tag.putUUID("BoundTrain", boundTrain);
-        if (assemblyId != null) tag.putUUID("AssemblyId", assemblyId);
-        if (persistentTrainId != null) tag.putUUID("PersistentTrainId", persistentTrainId);
         tag.putBoolean("ManualMode", manualMode);
         if (owner != null) tag.putUUID("Owner", owner);
         // 方块特性：玩家在 UI 里调的制动灵敏度
@@ -1056,8 +990,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.read(tag, registries, clientPacket);
         if (tag.hasUUID("BoundTrain")) boundTrain = tag.getUUID("BoundTrain");   // 缺失时保留已有绑定
-        if (tag.hasUUID("AssemblyId")) assemblyId = tag.getUUID("AssemblyId");
-        if (tag.hasUUID("PersistentTrainId")) persistentTrainId = tag.getUUID("PersistentTrainId");
         if (boundTrain != null) {
             // 重启后 OUR_TRAINS 是空的，必须重新登记，否则车厢会失去 mixin 保护
             TrainBinder.OUR_TRAINS.add(boundTrain);
