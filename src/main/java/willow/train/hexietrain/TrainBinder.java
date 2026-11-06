@@ -111,7 +111,11 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
                 subLevelId = subLevel.getUniqueId();
                 UUID existing = SUBLEVEL_TRAINS.get(subLevelId);
                 if (existing != null) {
-                    HexieTrain.LOGGER.warn("[HexieTrain][bind] 该子结构已有列车 {}，先注销", existing);
+                    var live = com.simibubi.create.Create.RAILWAYS.trains.get(existing);
+                    if (live != null && !live.invalid) {
+                        return Result.success(existing, "接管既有列车（未重建）");
+                    }
+                    HexieTrain.LOGGER.warn("[HexieTrain][bind] 旧列车 {} 已失效，注销后重建", existing);
                     unregister(existing);
                 }
             }
@@ -235,7 +239,10 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
             return Result.fail("无法从物理结构构造车厢");
         }
         // ⑤ 建车
-        UUID trainId = PENDING_TRAIN_ID != null ? PENDING_TRAIN_ID : UUID.randomUUID();
+        // 持久 UUID：先看调用方给的，再看世界存档文件，最后才随机
+        UUID trainId = PENDING_TRAIN_ID;
+        if (trainId == null && subLevelId != null) trainId = TrainBindings.resolve(level, subLevelId);
+        if (trainId == null) trainId = UUID.randomUUID();
         UUID owner = UUID.randomUUID();
         Train train;
         try {
