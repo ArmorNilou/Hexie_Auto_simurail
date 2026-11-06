@@ -752,11 +752,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
             // ③b 传动方向：驱动本方块自己的左右红石通道（自动模式的唯一动力来源）
             double stopZone = Math.max(STOP_ZONE, Math.abs(measuredSpeedMps()) * 1.2);   // 按速度动态
-            double dLeft = Math.max(0.0, nav.distanceToDestination);   // 【实验】刹车距离改用 Create 的沿轨距离
+            double dLeft = Math.max(0.0, legRemaining);   // 刹车距离：用我们自己的物理推进距离（legRemaining）
             double brakeFrac = dLeft >= stopZone ? 0.0 : 1.0 - dLeft / stopZone;   // 0→1，越近越强
             int brakeVal = (int) Math.round(15.0 * brakeFrac);
             if (dLeft < 1.0) brakeVal = 15;                                        // 1 格内最强刹
-            if (dLeft <= stopZone) {
+            if (legRemaining <= stopZone) {
                 if (Math.abs(measuredSpeedMps()) > 0.4)
                     setAutoDirection((float) -(nav.destinationBehindTrain ? -1.0 : 1.0));   // 反转扭矩制动
                 else
@@ -767,7 +767,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
             // ④ 刹车
             double targetV = legRemaining > SLOW_ZONE_BLOCKS ? Double.MAX_VALUE
-                    : Math.max(CREEP_SPEED_MPS, SLOW_ZONE_SPEED_MPS * (dLeft / SLOW_ZONE_BLOCKS));
+                    : Math.max(CREEP_SPEED_MPS, SLOW_ZONE_SPEED_MPS * (legRemaining / SLOW_ZONE_BLOCKS));
             SetOutputBrake(Math.max(brakeVal, v > targetV + 0.25 ? SignalChannel.brakeStrength(legRemaining, v / 20.0, linearizeBrake) : 0));
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][auto] {}", t.toString()); }
     }
