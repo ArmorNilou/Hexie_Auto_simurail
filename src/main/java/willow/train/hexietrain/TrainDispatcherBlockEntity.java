@@ -694,6 +694,16 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             if (nav == null || nav.destination == null) return;
             GlobalStation st = nav.destination;
 
+            // 到站由 Create 判定：它把车放进站台（currentStation）或状态离开 IN_TRANSIT，就满刹保持
+            try {
+                if (train.getCurrentStation() != null
+                        || train.runtime.state != com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT) {
+                    SetOutputBrake(15);
+                    setAutoDirection(0f);
+                    return;
+                }
+            } catch (Throwable ignored) {}
+
             // ① 开始新段：记录沿轨长度
             if (pendingLeg >= 0 || st != lastLegDest || train.runtime.currentEntry != lastLegEntry || legRemaining < 0) {
                 legRemaining = pendingLeg >= 0 ? pendingLeg : Math.max(0.0, nav.distanceToDestination);
@@ -746,7 +756,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double brakeFrac = dLeft >= stopZone ? 0.0 : 1.0 - dLeft / stopZone;   // 0→1，越近越强
             int brakeVal = (int) Math.round(15.0 * brakeFrac);
             if (dLeft < 1.0) brakeVal = 15;                                        // 1 格内最强刹
-            if (legRemaining <= stopZone) {
+            if (dLeft <= stopZone) {
                 if (Math.abs(measuredSpeedMps()) > 0.4)
                     setAutoDirection((float) -(nav.destinationBehindTrain ? -1.0 : 1.0));   // 反转扭矩制动
                 else
@@ -759,28 +769,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double targetV = legRemaining > SLOW_ZONE_BLOCKS ? Double.MAX_VALUE
                     : Math.max(CREEP_SPEED_MPS, SLOW_ZONE_SPEED_MPS * (dLeft / SLOW_ZONE_BLOCKS));
             SetOutputBrake(Math.max(brakeVal, v > targetV + 0.25 ? SignalChannel.brakeStrength(legRemaining, v / 20.0, linearizeBrake) : 0));
-
-            // ⑤ 到站：四步（snap → arriveAt → 清 destination → 清 path）
-            if (legRemaining <= 0.05 && v < 0.5) {
-                snapVirtualTo(train, st);
-                try {
-                    var rt = train.runtime;
-                    if (rt.state != com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT)
-                        rt.state = com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT;
-                    // 条件列为空会导致 tickConditions 永不推进：补一个空列
-                    if (rt.schedule != null && rt.currentEntry >= 0 && rt.currentEntry < rt.schedule.entries.size()) {
-                        var conds = rt.schedule.entries.get(rt.currentEntry).conditions;
-                        if (conds.isEmpty()) conds.add(new java.util.ArrayList<>());
-                    }
-                    train.arriveAt(st); nav.destination = null;   // 唯一新增：清目标，状态机才能推进
-                } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
-                try { var f2 = nav.getClass().getDeclaredField("currentPath"); f2.setAccessible(true); ((java.util.List<?>) f2.get(nav)).clear(); } catch (Throwable ignored) {}
-                nav.destination = null;
-                dwellingStation = st;
-                HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车位置触发）", st.name);
-                legRemaining = -1;
-                lastLegDest = null;
-            }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][auto] {}", t.toString()); }
     }
 
