@@ -111,8 +111,8 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
                 subLevelId = subLevel.getUniqueId();
                 UUID existing = SUBLEVEL_TRAINS.get(subLevelId);
                 if (existing != null) {
-                    // 该子结构已有列车 → 直接接管，绝不注销重建（重建会重置 TravellingPoint，导航被打断）
-                    return Result.success(existing, "接管既有列车（未重建）");
+                    HexieTrain.LOGGER.warn("[HexieTrain][bind] 该子结构已有列车 {}，先注销", existing);
+                    unregister(existing);
                 }
             }
         } catch (Throwable ignored) {

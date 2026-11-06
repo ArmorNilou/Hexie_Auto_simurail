@@ -143,16 +143,7 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
         if (blockEntity == null) return false;
         switch (id) {
             // 零启动/非零启动改由时刻表按站设置，不再走 UI
-                case 3 -> {
-                    // 右上角按钮：玩家操控 ↔ 自动驾驶
-                    boolean hasSchedule = !blockEntity.scheduleSlot().isEmpty();
-                    boolean auto = !blockEntity.manualMode();
-                    if (auto) {
-                        blockEntity.setManualMode(true);          // → 玩家操控：直接允许
-                    } else if (hasSchedule) {
-                        blockEntity.setManualMode(false);         // → 自动驾驶：必须有时刻表且无红石
-                    }
-                }
+            case 3 -> blockEntity.setManualMode(!blockEntity.manualMode());
             // 确认按钮走 id>=200 分支（带索引）
             default -> {
                 return false;
