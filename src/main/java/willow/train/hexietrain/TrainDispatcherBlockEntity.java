@@ -786,9 +786,13 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     @Override
     public void remove() {
-        if (level != null && !level.isClientSide) {
+        // 只有"方块真的不在了"才抹除：区块卸载/走远不得清绑定
+        boolean blockGone = level != null && !level.getBlockState(worldPosition).is(getBlockState().getBlock());
+        boolean unloading = false;
+        try { unloading = isChunkUnloaded(); } catch (Throwable ignored) {}
+        if (blockGone && !unloading) {
             if (boundTrain != null) {
-                HexieTrain.LOGGER.info("[HexieTrain][bind] 调度器被移除 → 抹除虚拟列车与绑定");
+                HexieTrain.LOGGER.info("[HexieTrain][bind] 调度器被破坏 → 抹除虚拟列车与绑定");
                 dissolve();
             }
             assemblyId = null;
