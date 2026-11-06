@@ -138,6 +138,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private float autoDirection = 0f;
     /** 方块的"左"是否就是虚拟列车定义的前进方向（绑定/放置时一次判定，之后不变）。 */
     private Boolean leftIsForward = null;
+    private boolean polarityFixed = false;   // 方向极性是否已锁定
+    private int dirAgreeTicks = 0;          // 连续一致/相反的 tick 计数
 
     /** 输出传动比 0~1：视距内按加速度渐变到 1，视距外直接用二进制。 */
     private float outputRatio = 0f;
@@ -495,41 +497,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         if (manual != manualMode) { manualMode = manual; setChanged(); sendData(); }
     }
 
-    /**
-     * 一次判定：方块的"左"是否等于虚拟列车的前进方向。
-     * 依据 Simurail 转向架：getMovementSpeed() 已是整条传动链累乘后的行驶速度，
-     * 乘上 getDirection() 再投影到轨道切线，就是"这组输出让车沿轨道往哪走"。
-     */
-    private boolean leftPolarity() {
-        if (leftIsForward != null) return leftIsForward;
-        leftIsForward = true;
-        try {
-            Train train = Create.RAILWAYS.trains.get(boundTrain);
-            if (train == null || train.carriages.isEmpty() || !(level instanceof ServerLevel sl)) return true;
-            var lp = train.carriages.get(0).getLeadingPoint();
-            if (lp == null || lp.edge == null) return true;
-            var tan = lp.edge.getDirection(true);
-            double best = 0;
-            for (net.minecraft.core.BlockPos bp : net.minecraft.core.BlockPos.betweenClosed(
-                    worldPosition.offset(-6, -4, -6), worldPosition.offset(6, 4, 6))) {
-                var be = sl.getBlockEntity(bp);
-                if (be == null || !be.getClass().getName().contains("PhysicsBogeyBlockEntity")) continue;
-                try {
-                    double ms = (double) be.getClass().getMethod("getMovementSpeed").invoke(be);
-                    var dir = (org.joml.Vector3dc) be.getClass().getMethod("getDirection").invoke(be);
-                    double dot = ms * (dir.x() * tan.x + dir.y() * tan.y + dir.z() * tan.z);
-                    if (Math.abs(dot) > Math.abs(best)) best = dot;
-                } catch (Throwable ignored) {}
-            }
-            if (Math.abs(best) > 1.0E-4) {
-                leftIsForward = best > 0;
-                HexieTrain.LOGGER.info("[HexieTrain][dir] dot={} 左是前进={}", String.format("%.3f", best), leftIsForward);
-            } else {
-                HexieTrain.LOGGER.info("[HexieTrain][dir] 转向架速度为 0，沿用默认 左是前进=true");
-            }
-        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][dir] {}", t.toString()); }
-        return leftIsForward;
-    }
 
     /**
      * 自动模式的传动输出。只在 !manualMode 时调用，因此 blockstate 所有权是互斥的：
@@ -544,7 +511,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private void setAutoDirection(float dir) {
         if (Math.abs(dir - autoDirection) < 1.0E-4f) return;
         autoDirection = dir;
-        boolean pol = leftPolarity();
+            boolean pol = (leftIsForward == null) ? true : leftIsForward;   // 唯一判定源：速度矢量 vs 导航方向
         boolean forward = dir > 0.001f, reverse = dir < -0.001f;
         boolean left  = forward ? pol : (reverse ? !pol : false);
         boolean right = forward ? !pol : (reverse ? pol : false);
@@ -669,6 +636,34 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 if (dd > 8.0) { dwellingStation = null; HexieTrain.LOGGER.info("[HexieTrain][depart] 物理车已离开 {}", st.name); }
                 return;
             }
+
+            // ★ 方向判定（唯一来源）：速度矢量 与 导航目标 的一致性
+            // 连续 10 tick 一致/相反才动作，避免起步抖动期误锁。
+            try {
+                double vt   = bodySpeedAlongTrackBps();
+                double want = nav.destinationBehindTrain ? -1.0 : 1.0;
+                if (!polarityFixed) {
+                    if (Math.abs(vt) > 0.8) {
+                        if (Math.signum(vt) != Math.signum(want)) {
+                            if (--dirAgreeTicks <= -10) {
+                                boolean cur = (leftIsForward == null) ? true : leftIsForward;
+                                leftIsForward = !cur;
+                                polarityFixed = true;
+                                HexieTrain.LOGGER.info("[HexieTrain][dir] 连续 10 tick 逆行(vtrack={}, want={}) → 翻转极性 leftIsForward={}",
+                                        String.format("%.2f", vt), want, leftIsForward);
+                            }
+                        } else {
+                            if (++dirAgreeTicks >= 10) {
+                                polarityFixed = true;
+                                HexieTrain.LOGGER.info("[HexieTrain][dir] 连续 10 tick 一致(vtrack={}, want={}) → 极性正确，锁定",
+                                        String.format("%.2f", vt), want);
+                            }
+                        }
+                    } else {
+                        dirAgreeTicks = 0;   // 速度不足，重新计
+                    }
+                }
+            } catch (Throwable ignored) {}
 
             // ③b 传动方向：驱动本方块自己的左右红石通道（自动模式的唯一动力来源）
             double stopZone = Math.max(STOP_ZONE, Math.abs(measuredSpeedMps()) * 1.2);   // 按速度动态
