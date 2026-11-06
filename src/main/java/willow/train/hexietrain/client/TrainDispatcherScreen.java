@@ -130,7 +130,6 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
             badge = "玩家操控中";
         } else {
             badge = "自动驾驶中";
-            badge = "自动驾驶中";
         }
         int badgeColor = menu.manualMode() ? 0xFFB4632A
                 : (!menu.bound() ? 0xFF8B8B8B : 0xFF2E7D32);
