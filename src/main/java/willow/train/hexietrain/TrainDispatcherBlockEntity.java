@@ -203,6 +203,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 绑定的列车；null = 手动模式。 */
     private UUID boundTrain;
+    private UUID assemblyId;          // 物理子结构 UUID（放置时确定）
+    private UUID persistentTrainId;    // 与该结构绑死的列车 UUID（放置时生成并写存档）
 
     /** 放置这个方块的玩家 —— 列车拥有者。 */
     private UUID owner;
@@ -421,6 +423,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 由 DispatcherTicker 每 tick 调用。 */
     public void serverTick() {
+        ensureBinding();   // 放置方块即确定物理结构 UUID 并绑定列车 UUID
         updateMeasuredSpeed();
         try {
             if (boundTrain != null && !Create.RAILWAYS.trains.containsKey(boundTrain)) {
@@ -546,6 +549,43 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     // ══════════ 全参数探针（诊断用，不影响逻辑） ══════════
 
     private int probeTicks = 0;
+    /** 放置方块即绑定：确定所在物理子结构 UUID，并生成/复用其列车 UUID 写入世界存档。 */
+    /** 供 TrainBinder 查询：该位置方块已绑定的列车 UUID（没有则 null）。 */
+    public static UUID pendingTrainId(ServerLevel level, net.minecraft.core.BlockPos pos) {
+        try {
+            if (level.getBlockEntity(pos) instanceof TrainDispatcherBlockEntity be) return be.persistentTrainId;
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private void ensureBinding() {
+        if (!(level instanceof ServerLevel sl) || sl.isClientSide) return;
+        try {
+            if (assemblyId == null) {
+                var sub = SubLevelSuspend.containing(sl, worldPosition);
+                if (sub == null) {
+                    if (probeTicks % 200 == 0) HexieTrain.LOGGER.warn("[HexieTrain][bind] 找不到所在物理子结构 @{}，暂不绑定", worldPosition.toShortString());
+                    return;
+                }
+                assemblyId = sub.getUniqueId();
+                HexieTrain.LOGGER.info("[HexieTrain][bind] 物理结构 UUID = {}", assemblyId);
+            }
+            if (persistentTrainId == null) {
+                var data = TrainBindingData.get(sl);
+                UUID existing = data.trainOf(assemblyId);
+                if (existing != null) {
+                    persistentTrainId = existing;
+                    HexieTrain.LOGGER.info("[HexieTrain][bind] 复用既有列车 UUID = {}", existing);
+                } else {
+                    persistentTrainId = UUID.randomUUID();
+                    data.bind(assemblyId, persistentTrainId);
+                    HexieTrain.LOGGER.info("[HexieTrain][bind] 新建列车 UUID = {} 并写入 hexie_train_bindings.dat", persistentTrainId);
+                }
+                setChanged();
+            }
+        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][bind] 绑定失败: {}", t.toString()); }
+    }
+
 
     private void probe(Train train) {
         if (probeTicks++ % 20 != 0) return;
@@ -966,6 +1006,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     protected void write(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.write(tag, registries, clientPacket);
         if (boundTrain != null) tag.putUUID("BoundTrain", boundTrain);
+        if (assemblyId != null) tag.putUUID("AssemblyId", assemblyId);
+        if (persistentTrainId != null) tag.putUUID("PersistentTrainId", persistentTrainId);
         tag.putBoolean("ManualMode", manualMode);
         if (owner != null) tag.putUUID("Owner", owner);
         // 方块特性：玩家在 UI 里调的制动灵敏度
@@ -985,6 +1027,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.read(tag, registries, clientPacket);
         if (tag.hasUUID("BoundTrain")) boundTrain = tag.getUUID("BoundTrain");   // 缺失时保留已有绑定
+        if (tag.hasUUID("AssemblyId")) assemblyId = tag.getUUID("AssemblyId");
+        if (tag.hasUUID("PersistentTrainId")) persistentTrainId = tag.getUUID("PersistentTrainId");
         if (boundTrain != null) {
             // 重启后 OUR_TRAINS 是空的，必须重新登记，否则车厢会失去 mixin 保护
             TrainBinder.OUR_TRAINS.add(boundTrain);

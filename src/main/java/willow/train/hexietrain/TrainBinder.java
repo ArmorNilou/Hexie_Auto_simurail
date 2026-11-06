@@ -235,6 +235,7 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
         // ⑤ 建车
         // 物理结构 ↔ 列车 UUID 持久绑定：先查表，没有才生成
         UUID trainId = null;
+        if (trainId == null) trainId = TrainDispatcherBlockEntity.pendingTrainId(level, dispatcherPos);   // 优先用方块已绑定的 UUID
         try {
             if (subLevelId != null) trainId = TrainBindingData.get(level).trainOf(subLevelId);
             if (trainId != null) HexieTrain.LOGGER.info("[HexieTrain][bind] 复用既有列车 UUID {}", trainId);
