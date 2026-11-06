@@ -555,10 +555,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 未绑定：只做红石模式同步，不驱动任何东西。 */
     private void tickManual() {
-        boolean manual = leftSignal() > 0 || rightSignal() > 0;
-        if (manual != manualMode) { manualMode = manual; setChanged(); sendData(); }
-    }
+        // 玩家操控不在此处改变 manualMode：红石由 tickAutomated 单向拉入，按钮由玩家决定
 
+    }
     /** 输出极性：只在 leftIsForward 被外部判定后使用；不再读转向架（残留代码已移除）。 */
     private boolean leftPolarity() {
         return leftIsForward == null ? true : leftIsForward;
