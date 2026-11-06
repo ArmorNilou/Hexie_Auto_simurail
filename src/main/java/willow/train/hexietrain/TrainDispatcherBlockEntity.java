@@ -201,6 +201,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 绑定的列车；null = 手动模式。 */
     private UUID boundTrain;
+    private UUID assemblyId;          // 所在物理结构 UUID
+    private UUID persistentTrainId;    // 该结构专属的虚拟列车 UUID
 
     /** 放置这个方块的玩家 —— 列车拥有者。 */
     private UUID owner;
@@ -282,6 +284,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     @Override
     public void tick() {
         super.tick();
+        if (level != null && !level.isClientSide && !ACTIVE.contains(this)) ACTIVE.add(this);   // 自愈登记：任何一次 tick 都能补回
         // 逻辑不在这里跑：由 DispatcherTicker 全局驱动（方块不能当大脑）
     }
 
@@ -783,6 +786,14 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     @Override
     public void remove() {
+        if (level != null && !level.isClientSide) {
+            if (boundTrain != null) {
+                HexieTrain.LOGGER.info("[HexieTrain][bind] 调度器被移除 → 抹除虚拟列车与绑定");
+                dissolve();
+            }
+            assemblyId = null;
+            persistentTrainId = null;
+        }
         ACTIVE.remove(this);
         if (level != null && !level.isClientSide) {
             for (WirelessChannel ch : wireless) {
