@@ -243,6 +243,7 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
             // 右上角徽标 = 驾驶模式切换
             // 不依赖 menu.bound()：手操时虚拟列车会被注销，bound() 为 false，否则永远切不回自动
             if (isIn(x, y, PANEL_W - 74, 1, 70, 15)) {
+                minecraft.gameMode.handleInventoryButtonClick(menu.containerId, 3);   // 发送按钮 id 3
                 return true;
             }
         }
