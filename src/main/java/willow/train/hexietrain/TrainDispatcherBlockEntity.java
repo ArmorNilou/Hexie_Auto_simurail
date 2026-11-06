@@ -138,7 +138,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private float autoDirection = 0f;
     /** 方块的"左"是否就是虚拟列车定义的前进方向（绑定/放置时一次判定，之后不变）。 */
     private Boolean leftIsForward = null;
-    private boolean polarityFixed = false;   // 极性是否已用实测锁定
 
     /** 输出传动比 0~1：视距内按加速度渐变到 1，视距外直接用二进制。 */
     private float outputRatio = 0f;
@@ -155,14 +154,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 所有已加载的调度台（由全局 ticker 驱动，不依赖方块实体自身 tick）。 */
     private static final Set<TrainDispatcherBlockEntity> ACTIVE = ConcurrentHashMap.newKeySet();
-    /** 列车 id → 调度器：供 Train 速度注入 mixin 查询。 */
-    public static final java.util.Map<UUID, TrainDispatcherBlockEntity> BY_TRAIN = new ConcurrentHashMap<>();
-    private static final java.util.Map<UUID, TrainDispatcherBlockEntity> DISPATCHER_OWNER = new ConcurrentHashMap<>();
-
-    /** 供 mixin 调用：物理车沿轨位移（格/tick，带符号）。 */
-    public double physicalSpeedPerTick() {
-        try { return bodySpeedAlongTrackBps() / 20.0; } catch (Throwable t) { return 0.0; }
-    }
     /** 每个列车 id 只认一个 BE 实例（身份认领，坐标不同也能识别副本）。 */
     private static final java.util.Map<UUID, TrainDispatcherBlockEntity> TRAIN_OWNER = new ConcurrentHashMap<>();
 
@@ -374,7 +365,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         manualMode = value;
         if (level != null && !level.isClientSide && boundTrain != null) {
             Train train = Create.RAILWAYS.trains.get(boundTrain);
-            probe(train);
             probe(train);
             if (train != null) {
                 try {
@@ -645,12 +635,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         try { b.append(s.get()); } catch (Throwable t) { b.append("ERR:").append(t.getClass().getSimpleName()); }
     }
 
-    // ══════════ 全参数探针 ══════════
-
-
     private void driveToStation(Train train) {
         try {
-            // 速度由 mixin 每 tick 注入物理位移，不再冻结
+            train.speed = 0;        // ★ 不自走
             train.targetSpeed = 0;
             if (train.derailed || train.invalid || !isPrimaryDispatcher()) return;
 
@@ -664,7 +651,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 pendingLeg = -1;
                 lastLegDest = st;
                 lastLegEntry = train.runtime.currentEntry;
-                HexieTrain.LOGGER.info("[HexieTrain][leg] → {} 沿轨长度={} cyclic={} entry={}", st.name, String.format("%.1f", legRemaining), (train.runtime.schedule != null && train.runtime.schedule.cyclic), train.runtime.currentEntry);
+                HexieTrain.LOGGER.info("[HexieTrain][leg] → {} 沿轨长度={}", st.name, String.format("%.1f", legRemaining));
             }
 
             // ② 物理位移核减（带符号）
@@ -682,19 +669,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 if (dd > 8.0) { dwellingStation = null; HexieTrain.LOGGER.info("[HexieTrain][depart] 物理车已离开 {}", st.name); }
                 return;
             }
-
-            // ★ 极性校正：命令方向与实测沿轨方向相反时翻转一次并锁定
-            try {
-                double vt = bodySpeedAlongTrackBps();
-                double cmd = nav.destinationBehindTrain ? -1.0 : 1.0;
-                if (!polarityFixed && Math.abs(vt) > 1.5) {
-                    if (Math.signum(vt) != Math.signum(cmd)) {
-                        leftIsForward = !(leftIsForward == null ? true : leftIsForward);
-                        HexieTrain.LOGGER.info("[HexieTrain][dir] 实测逆行 → 翻转极性 leftIsForward={}", leftIsForward);
-                    }
-                    polarityFixed = true;
-                }
-            } catch (Throwable ignored) {}
 
             // ③b 传动方向：驱动本方块自己的左右红石通道（自动模式的唯一动力来源）
             double stopZone = Math.max(STOP_ZONE, Math.abs(measuredSpeedMps()) * 1.2);   // 按速度动态
@@ -886,8 +860,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         }
         if (level != null) {
         }
-        if (boundTrain != null) BY_TRAIN.remove(boundTrain);
-        DISPATCHER_OWNER.remove(boundTrain);
         boundTrain = null;
         lastDestination = null;
     }
@@ -976,7 +948,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
     public void bindTrain(UUID id) {
-        BY_TRAIN.put(id, this);
         leftIsForward = null;   // 重新判定朝向
         boundTrain = id;
         lastDestination = null;
@@ -1228,27 +1199,12 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
 
     /** 本方块是否是这列车的主调度器（一列车只允许一个输出传动）。 */
-    /**
-     * 本 BE 是否是这列车唯一的驱动者。
-     *
-     * <p>不能比较方块坐标：Sable 绘图区坐标与世界坐标不一致（实测 20481031,224,20481034）。
-     * 改为按对象身份认领，谁先来谁是驱动者；旧驱动者失效时允许抢占。
-     */
     private boolean isPrimaryDispatcher() {
         if (boundTrain == null) return false;
-        if (level == null || level.isClientSide) return false;
-        TrainDispatcherBlockEntity cur = DISPATCHER_OWNER.get(boundTrain);
-        if (cur == this) return true;
-        if (cur == null) {
-            TrainDispatcherBlockEntity raced = DISPATCHER_OWNER.putIfAbsent(boundTrain, this);
-            return raced == null || raced == this;
-        }
-        if (cur.isRemoved() || cur.getLevel() == null) {
-            DISPATCHER_OWNER.put(boundTrain, this);
-            return true;
-        }
-        return false;
+        net.minecraft.core.BlockPos primary = TrainBinder.TRAIN_DISPATCHERS.get(boundTrain);
+        return primary != null && primary.equals(worldPosition);
     }
+
 
     /** 当前实际速度（格/tick × 100），给 UI 显示用。 */
 
