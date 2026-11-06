@@ -849,6 +849,13 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 只负责保存时刻表；虚拟列车的有无统一由 syncTrainPresence 决定。 */
     public void setScheduleSlot(ItemStack stack) {
         this.scheduleSlot = stack == null ? ItemStack.EMPTY : stack.copyWithCount(1);
+        // 放入/取出时刻表是"一定发生在服务端真实实例上"的时刻：当场登记并立即同步列车
+        if (level != null && !level.isClientSide) {
+            ACTIVE.add(this);
+            if (!scheduleSlot.isEmpty() && !manualMode) {
+                if (boundTrain == null) bindTrainNow();
+            }
+        }
         refreshStopNames();
         // 建/拆由 serverTick 的定期校验统一触发，这里只存数据
         setChanged();
