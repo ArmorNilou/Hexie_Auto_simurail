@@ -694,8 +694,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double vNow = Math.abs(measuredSpeedMps());
             double moved = (nav.destinationBehindTrain ? -1.0 : 1.0) * vNow / 20.0;   // 用驾驶意图定符号，不用不可靠的切线投影
             legRemaining = Math.max(0.0, legRemaining - moved);
-            // 单向重同步：Create 的沿轨距离明显更大 → 说明 leg 种子错了（pendingLeg 污染），以 Create 为准
-            if (nav.distanceToDestination > legRemaining + 5.0) legRemaining = nav.distanceToDestination;
             nav.distanceToDestination = legRemaining;
             double v = Math.abs(measuredSpeedMps());
 
