@@ -138,6 +138,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private float autoDirection = 0f;
     /** 方块的"左"是否就是虚拟列车定义的前进方向（绑定/放置时一次判定，之后不变）。 */
     private Boolean leftIsForward = null;
+    private boolean polarityFixed = false;   // 极性是否已用"速度矢量 vs 导航目标"锁定
 
     /** 输出传动比 0~1：视距内按加速度渐变到 1，视距外直接用二进制。 */
     private float outputRatio = 0f;
@@ -671,6 +672,25 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 if (dd > 8.0) { dwellingStation = null; HexieTrain.LOGGER.info("[HexieTrain][depart] 物理车已离开 {}", st.name); }
                 return;
             }
+
+            // ★ 方向判定：速度矢量 与 导航目标 一致性
+            // 导航说目标在前（behind=false）→ 期望沿轨速度为正；实测为负 → 极性反了，翻转并锁定
+            try {
+                double vt   = bodySpeedAlongTrackBps();
+                double want = nav.destinationBehindTrain ? -1.0 : 1.0;
+                if (!polarityFixed && Math.abs(vt) > 0.5) {
+                    if (Math.signum(vt) != Math.signum(want)) {
+                        boolean cur = (leftIsForward == null) ? true : leftIsForward;
+                        leftIsForward = !cur;
+                        HexieTrain.LOGGER.info("[HexieTrain][dir] vtrack={} 与导航方向 {} 相反 → 翻转极性 leftIsForward={}",
+                                String.format("%.2f", vt), want, leftIsForward);
+                    } else {
+                        HexieTrain.LOGGER.info("[HexieTrain][dir] vtrack={} 与导航方向 {} 一致 → 极性正确",
+                                String.format("%.2f", vt), want);
+                    }
+                    polarityFixed = true;
+                }
+            } catch (Throwable ignored) {}
 
             // ③b 传动方向：驱动本方块自己的左右红石通道（自动模式的唯一动力来源）
             double stopZone = Math.max(STOP_ZONE, Math.abs(measuredSpeedMps()) * 1.2);   // 按速度动态
