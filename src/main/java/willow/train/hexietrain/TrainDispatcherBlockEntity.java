@@ -548,6 +548,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             if (manualMode) { setDispatcherState(DispatcherState.IDLE); SetOutputBrake(15); return; }
 
             driveToStation(train);
+            // TP 锚定：把虚拟车厢的点直接摆到物理转向架位置（每 tick，绝对覆盖）
+            if (level instanceof ServerLevel slA) TrainBinder.reanchor(train, slA, worldPosition);
             // 四态赋值：待命 / 行驶中 / 滑车 / 急刹
             try {
                 if (train.navigation.destination == null) {

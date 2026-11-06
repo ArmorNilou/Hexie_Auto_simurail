@@ -306,6 +306,45 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
     }
 
     /** 复制一个轨道点（含所在的边与位置），与源对象完全解耦。 */
+    /**
+     * TP 锚定：把虚拟列车每节车厢的前后点，直接写到物理转向架当前的轨道点。
+     * 照 CRH-HeXie 的 CreateTrainBridge.copy() 语义——绝对覆盖，不靠积分。
+     */
+    public static void reanchor(Train train, ServerLevel level, BlockPos center) {
+        try {
+            if (train == null || train.carriages.isEmpty()) return;
+            java.util.List<PhysicsBogeyBlockEntity> all = new java.util.ArrayList<>();
+            BlockPos.MutableBlockPos cur = new BlockPos.MutableBlockPos();
+            for (int dx = -SCAN_H; dx <= SCAN_H; dx++)
+                for (int dy = -SCAN_V; dy <= SCAN_V; dy++)
+                    for (int dz = -SCAN_H; dz <= SCAN_H; dz++) {
+                        cur.set(center.getX() + dx, center.getY() + dy, center.getZ() + dz);
+                        if (level.getBlockEntity(cur) instanceof PhysicsBogeyBlockEntity bg) all.add(bg);
+                    }
+            if (all.isEmpty()) return;
+            for (int i = 0; i < train.carriages.size(); i++) {
+                Carriage car = train.carriages.get(i);
+                PhysicsBogeyBlockEntity front = all.get(Math.min(all.size() - 1, i * 2));
+                PhysicsBogeyBlockEntity back  = all.get(Math.min(all.size() - 1, i * 2 + 1));
+                var fp = front.getAxle(true).getTrackPoint();
+                var bp = back.getAxle(false).getTrackPoint();
+                if (fp != null) copyInto(fp, car.getLeadingPoint());
+                if (bp != null) copyInto(bp, car.getTrailingPoint());
+            }
+        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][anchor] {}", t.toString()); }
+    }
+
+    /** 绝对写入：node1/node2/edge/position 全量覆盖（同 CRH-HeXie 的 copy）。 */
+    private static void copyInto(TravellingPoint src, TravellingPoint dst) {
+        if (dst == null) return;
+        dst.node1 = src.node1;
+        dst.node2 = src.node2;
+        dst.edge = src.edge;
+        dst.position = src.position;
+        dst.upsideDown = src.upsideDown;
+        dst.blocked = src.blocked;
+    }
+
     private static TravellingPoint copyPoint(TravellingPoint src) {
         TrackNode n1 = src.node1;
         TrackNode n2 = src.node2;
