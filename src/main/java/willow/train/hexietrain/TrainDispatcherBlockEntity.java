@@ -730,7 +730,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 if (Math.abs(measuredSpeedMps()) > 0.4)
                     setAutoDirection((float) -(nav.destinationBehindTrain ? -1.0 : 1.0));   // 反转扭矩制动
                 else
-                    setAutoDirection(0f);                                                    // 停稳后切断
+                    setAutoDirection((float) (nav.destinationBehindTrain ? -1.0 : 1.0));   // ★ 未到站就继续给扭矩，否则"停止→掐扭矩→永远不动"
             } else {
                 setAutoDirection((float) (nav.destinationBehindTrain ? -1.0 : 1.0));
             }
