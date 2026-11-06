@@ -558,6 +558,25 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         return null;
     }
 
+    /**
+     * 把物理结构与列车 UUID 记到 physic_train/<结构UUID>.txt。
+     * 不依赖日志，直接落盘可查。
+     */
+    private void writeStructureFile(ServerLevel sl, UUID structure, UUID train) {
+        try {
+            java.nio.file.Path dir = java.nio.file.Paths.get("physic_train");
+            java.nio.file.Files.createDirectories(dir);
+            java.nio.file.Path file = dir.resolve(structure.toString() + ".txt");
+            StringBuilder sb = new StringBuilder();
+            sb.append("structure=").append(structure).append(System.lineSeparator());
+            sb.append("train=").append(train == null ? "(none)" : train.toString()).append(System.lineSeparator());
+            sb.append("dimension=").append(sl.dimension().location()).append(System.lineSeparator());
+            sb.append("pos=").append(worldPosition.toShortString()).append(System.lineSeparator());
+            sb.append("updated=").append(java.time.LocalDateTime.now()).append(System.lineSeparator());
+            java.nio.file.Files.writeString(file, sb.toString());
+        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][file] {}", t.toString()); }
+    }
+
     private void ensureBinding() {
         if (!(level instanceof ServerLevel sl) || sl.isClientSide) return;
         try {
@@ -568,7 +587,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                     return;
                 }
                 assemblyId = sub.getUniqueId();
-                HexieTrain.LOGGER.info("[HexieTrain][bind] 物理结构 UUID = {}", assemblyId);
+                writeStructureFile(sl, assemblyId, null);   // 记录到 physic_train/<结构UUID>.txt
             }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][bind] 绑定失败: {}", t.toString()); }
     }
@@ -902,11 +921,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             UUID existing = data.trainOf(assemblyId);
             if (existing != null) {
                 persistentTrainId = existing;
-                HexieTrain.LOGGER.info("[HexieTrain][bind] 复用专属列车 UUID = {}", existing);
+                writeStructureFile(sl, assemblyId, persistentTrainId);
             } else {
                 persistentTrainId = UUID.randomUUID();
+                writeStructureFile(sl, assemblyId, persistentTrainId);
                 data.bind(assemblyId, persistentTrainId);
-                HexieTrain.LOGGER.info("[HexieTrain][bind] 创建专属列车 UUID = {}（结构 {}）", persistentTrainId, assemblyId);
             }
             setChanged();
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][bind] 创建列车 UUID 失败: {}", t.toString()); }
