@@ -116,6 +116,11 @@ public class TrainDispatcherBlock extends DirectionalAxisKineticBlock
                                 BlockPos neighborPos, boolean movedByPiston) {
         if (level.isClientSide) return;
 
+        if (level.getBlockEntity(pos) instanceof willow.train.hexietrain.TrainDispatcherBlockEntity be) {
+            Direction toLeft = state.getValue(FACING).getCounterClockWise();
+            Direction toRight = state.getValue(FACING).getClockWise();
+            be.updateExternalInput(level.getSignal(pos.relative(toLeft), toLeft), level.getSignal(pos.relative(toRight), toRight));
+        }
         boolean wasLeft = state.getValue(LEFT_POWERED);
         boolean wasRight = state.getValue(RIGHT_POWERED);
         BlockState newState = getPoweredState(level, state, pos);

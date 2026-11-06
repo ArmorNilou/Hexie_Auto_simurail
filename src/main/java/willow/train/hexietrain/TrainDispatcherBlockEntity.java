@@ -235,6 +235,18 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     // ══════════════════════ 红石 → 转速（手动模式） ══════════════════════
 
+    /** 物理红石输入快照：只由 Block.neighborChanged 写入（无线链路不触发方块更新）。 */
+    private int extLeft = 0, extRight = 0;
+
+    /** 由方块在 neighborChanged 时调用：这才是"玩家给的物理红石"。 */
+    public void updateExternalInput(int left, int right) {
+        if (extLeft == left && extRight == right) return;
+        extLeft = left; extRight = right;
+        setChanged();
+    }
+
+    public int externalLeft() { return extLeft; }
+    public int externalRight() { return extRight; }
     public int leftSignal() {
         return sideSignal(true);
     }
@@ -505,7 +517,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][diag] {}", t.toString()); }
 
             if (!isOwner()) return;   // 非认领者不得驱动
-            int left = leftSignal(), right = rightSignal();
+            int left = extLeft, right = extRight;   // 只用物理红石（neighborChanged 维护），无线回环不进判定
             boolean redstonePresent = left > 0 || right > 0;
 
             // 玩家给红石 → 单向切手动（要恢复请点 UI 或重设列车）
@@ -557,8 +569,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         boolean left  = forward ? pol : (reverse ? !pol : false);
         boolean right = forward ? !pol : (reverse ? pol : false);
 
-        setOutput(SignalChannel.LEFT,  left  ? 15 : 0);
-        setOutput(SignalChannel.RIGHT, right ? 15 : 0);
         refreshWireless();
 
         if (!(level instanceof ServerLevel sl)) return;
@@ -951,8 +961,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         leftIsForward = null;
         try {
             setOutput(SignalChannel.BRAKE, 0);
-            setOutput(SignalChannel.LEFT, 0);
-            setOutput(SignalChannel.RIGHT, 0);
             refreshWireless();
         } catch (Throwable ignored) {}
     }
