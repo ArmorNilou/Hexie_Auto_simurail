@@ -156,6 +156,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private static final Set<TrainDispatcherBlockEntity> ACTIVE = ConcurrentHashMap.newKeySet();
     /** 列车 id → 调度器：供 Train 速度注入 mixin 查询。 */
     public static final java.util.Map<UUID, TrainDispatcherBlockEntity> BY_TRAIN = new ConcurrentHashMap<>();
+    private static final java.util.Map<UUID, TrainDispatcherBlockEntity> DISPATCHER_OWNER = new ConcurrentHashMap<>();
 
     /** 供 mixin 调用：物理车沿轨位移（格/tick，带符号）。 */
     public double physicalSpeedPerTick() {
@@ -868,6 +869,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         if (level != null) {
         }
         if (boundTrain != null) BY_TRAIN.remove(boundTrain);
+        DISPATCHER_OWNER.remove(boundTrain);
         boundTrain = null;
         lastDestination = null;
     }
@@ -1208,12 +1210,27 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
 
     /** 本方块是否是这列车的主调度器（一列车只允许一个输出传动）。 */
+    /**
+     * 本 BE 是否是这列车唯一的驱动者。
+     *
+     * <p>不能比较方块坐标：Sable 绘图区坐标与世界坐标不一致（实测 20481031,224,20481034）。
+     * 改为按对象身份认领，谁先来谁是驱动者；旧驱动者失效时允许抢占。
+     */
     private boolean isPrimaryDispatcher() {
         if (boundTrain == null) return false;
-        net.minecraft.core.BlockPos primary = TrainBinder.TRAIN_DISPATCHERS.get(boundTrain);
-        return primary != null && primary.equals(worldPosition);
+        if (level == null || level.isClientSide) return false;
+        TrainDispatcherBlockEntity cur = DISPATCHER_OWNER.get(boundTrain);
+        if (cur == this) return true;
+        if (cur == null) {
+            TrainDispatcherBlockEntity raced = DISPATCHER_OWNER.putIfAbsent(boundTrain, this);
+            return raced == null || raced == this;
+        }
+        if (cur.isRemoved() || cur.getLevel() == null) {
+            DISPATCHER_OWNER.put(boundTrain, this);
+            return true;
+        }
+        return false;
     }
-
 
     /** 当前实际速度（格/tick × 100），给 UI 显示用。 */
 
