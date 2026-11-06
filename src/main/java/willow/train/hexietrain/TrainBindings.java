@@ -41,7 +41,13 @@ public final class TrainBindings {
             Object p = m.invoke(level.getServer(), root);
             if (p instanceof Path path) return path;
         } catch (Throwable ignored) {}
-        return net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve("saves");
+        java.nio.file.Path saves = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve("saves");
+        try {
+            Object wd = level.getServer().getClass().getMethod("getWorldData").invoke(level.getServer());
+            String name = (String) wd.getClass().getMethod("getLevelName").invoke(wd);
+            if (name != null && !name.isBlank()) return saves.resolve(name);
+        } catch (Throwable ignored) {}
+        return saves;
     }
 
     private static Path file(ServerLevel level) {

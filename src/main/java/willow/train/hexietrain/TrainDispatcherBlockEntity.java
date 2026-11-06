@@ -453,6 +453,10 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                     worldPosition.getX() + 0.5, worldPosition.getY() + 0.5, worldPosition.getZ() + 0.5,
                     mode, dest, legRemaining);
         }
+        // 结构 UUID 自解析：任何实例都能拿到，状态写入不依赖建车实例
+        if (assemblyId == null && level instanceof ServerLevel slA) {
+            try { var subA = SubLevelSuspend.containing(slA, worldPosition); if (subA != null) assemblyId = subA.getUniqueId(); } catch (Throwable ignored) {}
+        }
         updateMeasuredSpeed();
         try {
             if (boundTrain != null && !Create.RAILWAYS.trains.containsKey(boundTrain)) {
