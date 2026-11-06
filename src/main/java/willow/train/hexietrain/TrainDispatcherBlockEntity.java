@@ -447,7 +447,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         // 实时状态写回世界存档（每 20 tick 一次，避免频繁 IO）
         if (level instanceof ServerLevel slSt && assemblyId != null && stateProbeTicks++ % 20 == 0) {
             Train st = boundTrain == null ? null : Create.RAILWAYS.trains.get(boundTrain);
-            String mode = manualMode ? "MANUAL" : (boundTrain == null ? "IDLE" : "AUTO");
+            String mode = dispatcherState.label();
             String dest = (st != null && st.navigation != null && st.navigation.destination != null)
                     ? st.navigation.destination.name : "-";
             double sp = 0; try { sp = Math.abs(measuredSpeedMps()); } catch (Throwable ignored) {}
@@ -508,22 +508,46 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
             if (!isOwner()) return;   // 非认领者不得驱动
             int left = leftSignal(), right = rightSignal();
-            boolean redstonePresent = left > 0 || right > 0;
+            boolean hasRedstone = left > 0 || right > 0;
+            boolean hasSchedule = !scheduleSlot.isEmpty();
 
-            // 玩家给红石 → 单向切手动（要恢复请点 UI 或重设列车）
-            if (redstonePresent) {
-                if (!manualMode) setManualMode(true);   // 内部会调 syncTrainPresence：注销虚拟列车、通道归零
-                double dir = left > 0 ? 1.0 : -1.0;
-                double mag = Math.max(left, right) / 15.0;
-                train.manualTick = true;
-                train.targetSpeed = dir * mag * MANUAL_MAX_SPEED;
-                train.approachTargetSpeed(1.0f);
+            // ══ 模态派生（唯一入口）══
+            // 有侧面红石 → 玩家操控（无视时刻表）；无红石无时刻表 → 未绑定；否则由 manualMode 决定
+            boolean unbound = !hasRedstone && !hasSchedule;
+            boolean manual  = hasRedstone || manualMode;
+
+            if (unbound) {
+                setAutoDirection(0f);          // 不输出任何应力
+                SetOutputBrake(0);
+                setOutput(SignalChannel.LEFT, 0);
+                setOutput(SignalChannel.RIGHT, 0);
+                setDispatcherState(DispatcherState.IDLE);
                 return;
             }
-            // 手动模式：blockstate 由 Block.neighborChanged 独占，我们绝不写（否则会抹掉红石状态）
-            if (manualMode) { SetOutputBrake(15); return; }
+            if (manual) {
+                if (!manualMode) setManualMode(true);   // 红石接管 → 切玩家操控（内部注销虚拟列车）
+                if (hasRedstone) {
+                    double dir = left > 0 ? 1.0 : -1.0;
+                    double mag = Math.max(left, right) / 15.0;
+                    train.manualTick = true;
+                    train.targetSpeed = dir * mag * MANUAL_MAX_SPEED;
+                    train.approachTargetSpeed(1.0f);
+                    setDispatcherState(DispatcherState.RUNNING);
+                } else {
+                    SetOutputBrake(0);
+                    setDispatcherState(DispatcherState.IDLE);
+                }
+                return;
+            }
 
+            // ══ AUTO：有时刻表且无红石 ══
+            if (manualMode) setManualMode(false);
             driveToStation(train);
+            try {
+                if (train.navigation.destination == null) setDispatcherState(DispatcherState.IDLE);
+                else if (output(SignalChannel.BRAKE) > 0) setDispatcherState(DispatcherState.BRAKING);
+                else setDispatcherState(DispatcherState.RUNNING);
+            } catch (Throwable ignored) {}
         } catch (Throwable t) {
             HexieTrain.LOGGER.warn("[HexieTrain][auto] 异常: {}", t.toString());
         }
