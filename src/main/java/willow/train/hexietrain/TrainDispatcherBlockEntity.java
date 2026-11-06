@@ -570,19 +570,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 assemblyId = sub.getUniqueId();
                 HexieTrain.LOGGER.info("[HexieTrain][bind] 物理结构 UUID = {}", assemblyId);
             }
-            if (persistentTrainId == null) {
-                var data = TrainBindingData.get(sl);
-                UUID existing = data.trainOf(assemblyId);
-                if (existing != null) {
-                    persistentTrainId = existing;
-                    HexieTrain.LOGGER.info("[HexieTrain][bind] 复用既有列车 UUID = {}", existing);
-                } else {
-                    persistentTrainId = UUID.randomUUID();
-                    data.bind(assemblyId, persistentTrainId);
-                    HexieTrain.LOGGER.info("[HexieTrain][bind] 新建列车 UUID = {} 并写入 hexie_train_bindings.dat", persistentTrainId);
-                }
-                setChanged();
-            }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][bind] 绑定失败: {}", t.toString()); }
     }
 
@@ -904,8 +891,31 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      * 放入时刻表 / 切回自动 → 建车；取出时刻表 / 切手动 / 玩家给红石 → 注销并归零。
      */
     /** 真正建车的私有动作，只被 syncTrainPresence 调用。 */
+    /** 放入时刻表时调用：查/建该物理结构专属的列车 UUID，并写入绑定存档。 */
+    private UUID ensureTrainId() {
+        if (!(level instanceof ServerLevel sl) || sl.isClientSide) return null;
+        if (persistentTrainId != null) return persistentTrainId;
+        try {
+            if (assemblyId == null) ensureBinding();
+            if (assemblyId == null) return null;
+            var data = TrainBindingData.get(sl);
+            UUID existing = data.trainOf(assemblyId);
+            if (existing != null) {
+                persistentTrainId = existing;
+                HexieTrain.LOGGER.info("[HexieTrain][bind] 复用专属列车 UUID = {}", existing);
+            } else {
+                persistentTrainId = UUID.randomUUID();
+                data.bind(assemblyId, persistentTrainId);
+                HexieTrain.LOGGER.info("[HexieTrain][bind] 创建专属列车 UUID = {}（结构 {}）", persistentTrainId, assemblyId);
+            }
+            setChanged();
+        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][bind] 创建列车 UUID 失败: {}", t.toString()); }
+        return persistentTrainId;
+    }
+
     private void bindTrainNow() {
         if (!(level instanceof ServerLevel serverLevel)) return;
+        ensureTrainId();   // 放入时刻表：先确保专属列车 UUID 已绑定
         try {
             TrainBinder.Result result = TrainBinder.bind(serverLevel, worldPosition, scheduleSlot, owner);
             lastBindMessage = result.message();
