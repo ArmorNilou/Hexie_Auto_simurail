@@ -201,6 +201,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 绑定的列车；null = 手动模式。 */
     private UUID boundTrain;
+    /** 列车 id → 调度器；供 Trainer 速度注入 mixin 查询。 */
+    public static final java.util.Map<UUID, TrainDispatcherBlockEntity> BY_TRAIN = new java.util.concurrent.ConcurrentHashMap<>();
     private int entryProbeTicks = 0;
     private int stateProbeTicks = 0;
     private UUID assemblyId;          // 所在物理结构 UUID
@@ -361,6 +363,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     // ══════════════════════ 驾驶模式 ══════════════════════
 
+    /** 物理车沿轨位移（格/tick，带符号），供速度注入 mixin 使用。 */
+    public double physicalSpeedPerTick() { try { return bodySpeedAlongTrackBps() / 20.0; } catch (Throwable t) { return 0.0; } }
     public boolean manualMode() {
         return manualMode;
     }
@@ -641,7 +645,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     private void driveToStation(Train train) {
         try {
-            train.speed = 0;        // ★ 不自走
+            // 速度由 mixin 每 tick 注入物理位移，不再冻结
             train.targetSpeed = 0;
             if (train.derailed || train.invalid || !isPrimaryDispatcher()) return;
 
@@ -866,6 +870,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 拆除列车身份：解除寻路 → 离站 → 从 RAILWAYS 移除。 */
     public void dissolve() {
         if (boundTrain == null) return;
+        if (boundTrain != null) BY_TRAIN.remove(boundTrain);
         if (level != null && !level.isClientSide) {
             Train train = Create.RAILWAYS.trains.get(boundTrain);
             if (train != null) {
@@ -976,6 +981,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
     public void bindTrain(UUID id) {
+        BY_TRAIN.put(id, this);
         leftIsForward = null;   // 重新判定朝向
         boundTrain = id;
         lastDestination = null;
