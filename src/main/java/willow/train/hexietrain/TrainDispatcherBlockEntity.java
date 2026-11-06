@@ -549,7 +549,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     // ══════════ 全参数探针（诊断用，不影响逻辑） ══════════
 
     private int probeTicks = 0;
-    /** 放置方块即绑定：确定所在物理子结构 UUID，并生成/复用其列车 UUID 写入世界存档。 */
     /** 供 TrainBinder 查询：该位置方块已绑定的列车 UUID（没有则 null）。 */
     public static UUID pendingTrainId(ServerLevel level, net.minecraft.core.BlockPos pos) {
         try {
@@ -559,38 +558,38 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
     /**
-     * 把物理结构与列车 UUID 记到 physic_train/<结构UUID>.txt。
-     * 不依赖日志，直接落盘可查。
+     * 每 tick 校验：调度器所在的物理结构 UUID 是否还成立。
+     * 结构消失 / 被重组（UUID 变了）→ 抹除旧列车与旧绑定，采用新 UUID。
      */
-    private void writeStructureFile(ServerLevel sl, UUID structure, UUID train) {
-        try {
-            java.nio.file.Path dir = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve("physic_train");   // 游戏(version)目录下的 physic_train
-            java.nio.file.Files.createDirectories(dir);
-            java.nio.file.Path file = dir.resolve(structure.toString() + ".txt");
-            StringBuilder sb = new StringBuilder();
-            sb.append("structure=").append(structure).append(System.lineSeparator());
-            sb.append("train=").append(train == null ? "(none)" : train.toString()).append(System.lineSeparator());
-            sb.append("dimension=").append(sl.dimension().location()).append(System.lineSeparator());
-            sb.append("pos=").append(worldPosition.toShortString()).append(System.lineSeparator());
-            sb.append("updated=").append(java.time.LocalDateTime.now()).append(System.lineSeparator());
-            java.nio.file.Files.writeString(file, sb.toString());
-        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][file] {}", t.toString()); }
-    }
-
     private void ensureBinding() {
         if (!(level instanceof ServerLevel sl) || sl.isClientSide) return;
         try {
-            if (assemblyId == null) {
-                var sub = SubLevelSuspend.containing(sl, worldPosition);
-                if (sub == null) {
-                    if (probeTicks % 200 == 0) HexieTrain.LOGGER.warn("[HexieTrain][bind] 找不到所在物理子结构 @{}，暂不绑定", worldPosition.toShortString());
-                    return;
+            var sub = SubLevelSuspend.containing(sl, worldPosition);
+            UUID now = (sub == null) ? null : sub.getUniqueId();
+            if (now == null) {
+                if (assemblyId != null) {
+                    HexieTrain.LOGGER.info("[HexieTrain][bind] 所在物理结构已不存在 → 抹除绑定与列车");
+                    dissolve();
+                    assemblyId = null;
+                    persistentTrainId = null;
+                    setChanged();
                 }
-                assemblyId = sub.getUniqueId();
-                writeStructureFile(sl, assemblyId, null);   // 记录到 physic_train/<结构UUID>.txt
+                return;
             }
-        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][bind] 绑定失败: {}", t.toString()); }
+            if (assemblyId == null) {
+                assemblyId = now;
+                setChanged();
+            } else if (!assemblyId.equals(now)) {
+                HexieTrain.LOGGER.info("[HexieTrain][bind] 物理结构被重组 {} → {}，重置绑定", assemblyId, now);
+                dissolve();
+                assemblyId = now;
+                persistentTrainId = null;
+                setChanged();
+            }
+        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][bind] 校验失败: {}", t.toString()); }
     }
+
+
 
 
     private void probe(Train train) {
@@ -921,10 +920,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             UUID existing = data.trainOf(assemblyId);
             if (existing != null) {
                 persistentTrainId = existing;
-                writeStructureFile(sl, assemblyId, persistentTrainId);
             } else {
                 persistentTrainId = UUID.randomUUID();
-                writeStructureFile(sl, assemblyId, persistentTrainId);
                 data.bind(assemblyId, persistentTrainId);
             }
             setChanged();
