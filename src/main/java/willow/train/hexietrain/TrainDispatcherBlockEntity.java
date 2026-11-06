@@ -382,6 +382,16 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
     /** 切换自动驾驶 / 玩家操控。切回自动时会恢复寻路。 */
+    /** 玩家在 UI 上强制切回自动：清除红石快照，避免"下一 tick 又被拉回手操"。 */
+    public void forceAuto() {
+        extLeft = 0;
+        extRight = 0;
+        manualMode = false;
+        setChanged();
+        sendData();
+        setManualMode(false);
+    }
+
     public void setManualMode(boolean value) {
         manualMode = value;
         if (level != null && !level.isClientSide && boundTrain != null) {

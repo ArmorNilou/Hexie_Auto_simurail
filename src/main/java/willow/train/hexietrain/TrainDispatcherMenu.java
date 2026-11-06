@@ -143,7 +143,11 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
         if (blockEntity == null) return false;
         switch (id) {
             // 零启动/非零启动改由时刻表按站设置，不再走 UI
-            case 3 -> blockEntity.setManualMode(!blockEntity.manualMode());
+                case 3 -> {
+                    // 手操 → 自动：强制回自动并清掉红石快照；自动 → 手操：直接切
+                    if (blockEntity.manualMode()) blockEntity.forceAuto();
+                    else blockEntity.setManualMode(true);
+                }
             // 确认按钮走 id>=200 分支（带索引）
             default -> {
                 return false;
