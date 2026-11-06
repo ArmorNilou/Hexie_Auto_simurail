@@ -33,3 +33,14 @@
 
 已完成：第 6 条（TrainBindingData + TrainBinder 复用 UUID）
 待完成：第 1~5 条
+## 0.6.0（有实证的节点，存档：`v0.6.0-bind-file`）
+- jar：`历史版本/[和谐：模拟自动铁路]Hexie_AutoSimulateTrain0.6.0.jar`（80.8KB / 23:54:54）
+- 已验证：
+  - 服务端 tick 稳定（`[entry]` 每秒一行，level=ServerLevel）
+  - 放入时刻表 → 建车 → 导航 → 到站 → `entry` 推进（0→1）→ 规划下一站
+  - 取出时刻表 → 注销虚拟列车，`boundTrain` 清空
+  - 绑定文件生成：`<GAMEDIR>/saves/hexie_train_bindings.txt`
+    `bind.<结构UUID>=<列车UUID>`，结构 UUID 稳定（0fc19fa3-…）
+  - 破坏调度器 → 删除该结构的 bind 与 state 行
+- 变更：删除 DispatcherTicker 的按坐标去重（唯一化只由 TRAIN_OWNER 按列车 UUID 负责）
+- 未完成：`state.*` 实时状态尚未写入；文件未落到 `<世界名>/` 子目录；方向极性判定未接回；三模态/按钮/通道语义未做
