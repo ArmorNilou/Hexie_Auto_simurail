@@ -953,9 +953,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     private void syncTrainPresence() {
         if (level == null || level.isClientSide) return;
-        boolean shouldExist = !manualMode
-                && !scheduleSlot.isEmpty()
-                && scheduleSlot.getItem() instanceof com.simibubi.create.content.trains.schedule.ScheduleItem;
+        // 列车存在与否只看时刻表；模式切换（手操/自动）绝不拆车
+        boolean shouldExist = !scheduleSlot.isEmpty() && scheduleSlot.getItem() instanceof com.simibubi.create.content.trains.schedule.ScheduleItem;
 
         if (!shouldExist) {
             if (boundTrain != null) {
