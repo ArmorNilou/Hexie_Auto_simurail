@@ -51,6 +51,8 @@ import java.util.UUID;
  * <p>失败时返回带原因的结果，方块据此显示"未接触轨道 / 没有转向架"。
  */
 public final class TrainBinder {
+    /** 由调度器在 bind 前设置：来自世界存档的持久绑定。 */
+    public static UUID PENDING_TRAIN_ID = null;
 
     /** 扫描半径（水平 / 垂直），找转向架用。 */
     private static final int SCAN_H = 12;
@@ -233,7 +235,7 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
             return Result.fail("无法从物理结构构造车厢");
         }
         // ⑤ 建车
-        UUID trainId = UUID.randomUUID();
+        UUID trainId = PENDING_TRAIN_ID != null ? PENDING_TRAIN_ID : UUID.randomUUID();
         UUID owner = UUID.randomUUID();
         Train train;
         try {

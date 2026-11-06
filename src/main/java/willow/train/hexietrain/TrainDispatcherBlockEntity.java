@@ -423,6 +423,15 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 由 DispatcherTicker 每 tick 调用。 */
     public void serverTick() {
+        // 唯一所有者：同一列车的输出只能有一个实例写，避免互相倾轧
+        if (boundTrain != null) {
+            TrainDispatcherBlockEntity owner = TRAIN_OWNER.get(boundTrain);
+            if (owner == null) { TRAIN_OWNER.put(boundTrain, this); owner = this; }
+            if (owner != this) {
+                if (owner.isRemoved() || owner.getLevel() == null) TRAIN_OWNER.put(boundTrain, this);
+                else return;
+            }
+        }
         // 探针：进入 serverTick 的最外层事实（在任何判定之前）
         if (entryProbeTicks++ % 20 == 0) {
             HexieTrain.LOGGER.info("[HexieTrain][entry] level={} remote={} slotEmpty={} bound={} pos={}",
@@ -508,40 +517,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         if (manual != manualMode) { manualMode = manual; setChanged(); sendData(); }
     }
 
-    /**
-     * 一次判定：方块的"左"是否等于虚拟列车的前进方向。
-     * 依据 Simurail 转向架：getMovementSpeed() 已是整条传动链累乘后的行驶速度，
-     * 乘上 getDirection() 再投影到轨道切线，就是"这组输出让车沿轨道往哪走"。
-     */
+    /** 输出极性：只在 leftIsForward 被外部判定后使用；不再读转向架（残留代码已移除）。 */
     private boolean leftPolarity() {
-        if (leftIsForward != null) return leftIsForward;
-        leftIsForward = true;
-        try {
-            Train train = Create.RAILWAYS.trains.get(boundTrain);
-            if (train == null || train.carriages.isEmpty() || !(level instanceof ServerLevel sl)) return true;
-            var lp = train.carriages.get(0).getLeadingPoint();
-            if (lp == null || lp.edge == null) return true;
-            var tan = lp.edge.getDirection(true);
-            double best = 0;
-            for (net.minecraft.core.BlockPos bp : net.minecraft.core.BlockPos.betweenClosed(
-                    worldPosition.offset(-6, -4, -6), worldPosition.offset(6, 4, 6))) {
-                var be = sl.getBlockEntity(bp);
-                if (be == null || !be.getClass().getName().contains("PhysicsBogeyBlockEntity")) continue;
-                try {
-                    double ms = (double) be.getClass().getMethod("getMovementSpeed").invoke(be);
-                    var dir = (org.joml.Vector3dc) be.getClass().getMethod("getDirection").invoke(be);
-                    double dot = ms * (dir.x() * tan.x + dir.y() * tan.y + dir.z() * tan.z);
-                    if (Math.abs(dot) > Math.abs(best)) best = dot;
-                } catch (Throwable ignored) {}
-            }
-            if (Math.abs(best) > 1.0E-4) {
-                leftIsForward = best > 0;
-                HexieTrain.LOGGER.info("[HexieTrain][dir] dot={} 左是前进={}", String.format("%.3f", best), leftIsForward);
-            } else {
-                HexieTrain.LOGGER.info("[HexieTrain][dir] 转向架速度为 0，沿用默认 左是前进=true");
-            }
-        } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][dir] {}", t.toString()); }
-        return leftIsForward;
+        return leftIsForward == null ? true : leftIsForward;
     }
 
     /**
