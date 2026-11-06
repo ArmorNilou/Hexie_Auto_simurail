@@ -655,6 +655,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 lastLegDest = st;
                 lastLegEntry = train.runtime.currentEntry;
                 HexieTrain.LOGGER.info("[HexieTrain][leg] → {} 沿轨长度={}", st.name, String.format("%.1f", legRemaining));
+                polarityFixed = false;   // 新段：方向极性重新判定一次（之前结论：每段校准一次并锁定）
             }
 
             // ② 物理位移核减（带符号）
@@ -970,6 +971,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
     public void bindTrain(UUID id) {
+        polarityFixed = false;   // 重新判定方向极性
         leftIsForward = null;   // 重新判定朝向
         boundTrain = id;
         lastDestination = null;
