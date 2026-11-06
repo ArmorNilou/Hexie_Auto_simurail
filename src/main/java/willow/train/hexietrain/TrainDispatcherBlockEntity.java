@@ -202,6 +202,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 绑定的列车；null = 手动模式。 */
     private UUID boundTrain;
     private int entryProbeTicks = 0;
+    private int stateProbeTicks = 0;
     private UUID assemblyId;          // 所在物理结构 UUID
     private UUID persistentTrainId;    // 该结构专属的虚拟列车 UUID
 

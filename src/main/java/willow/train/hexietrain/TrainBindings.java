@@ -9,45 +9,65 @@ import java.util.Map;
 import java.util.UUID;
 
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.level.storage.LevelResource;
 
 /**
- * 物理结构 ↔ 虚拟列车的持久绑定，存放在世界存档目录：
+ * 物理结构 ↔ 虚拟列车的持久绑定与实时状态，文件落在**单个世界存档目录**内：
  * <pre>{@code <世界>/hexie_train_bindings.txt}</pre>
- * 每行：{@code <结构UUID>=<列车UUID>}
  *
- * <p>一个结构只对应一个列车 UUID；破坏调度器时由调用方删除对应行。
+ * <p>格式（每行 key=value，节之间空行）：
+ * <pre>
+ * # 绑定
+ * bind.<结构UUID>=<列车UUID>
+ *
+ * # 实时状态（节流：每 20 tick 写一次）
+ * state.<结构UUID>.speed=6.70
+ * state.<结构UUID>.pos=123.5, 64.0, -88.2
+ * state.<结构UUID>.mode=AUTO|MANUAL|IDLE
+ * state.<结构UUID>.dest=站名
+ * state.<结构UUID>.leg=42.3
+ * </pre>
  */
 public final class TrainBindings {
 
     private TrainBindings() {}
 
-    private static Path file(ServerLevel level) {
-        java.nio.file.Path dir = net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve("saves");
-        return dir.resolve("hexie_train_bindings.txt");
+    /** 世界存档根目录：反射取 getWorldPath(ROOT)，失败则退回 saves 根。 */
+    private static Path worldDir(ServerLevel level) {
+        try {
+            var m = level.getServer().getClass().getMethod("getWorldPath",
+                    Class.forName("net.minecraft.world.level.storage.LevelResource"));
+            Object root = Class.forName("net.minecraft.world.level.storage.LevelResource")
+                    .getMethod("valueOf", String.class).invoke(null, "ROOT");
+            Object p = m.invoke(level.getServer(), root);
+            if (p instanceof Path path) return path;
+        } catch (Throwable ignored) {}
+        return net.neoforged.fml.loading.FMLPaths.GAMEDIR.get().resolve("saves");
     }
 
-    private static Map<UUID, UUID> load(ServerLevel level) {
-        Map<UUID, UUID> map = new LinkedHashMap<>();
+    private static Path file(ServerLevel level) {
+        return worldDir(level).resolve("hexie_train_bindings.txt");
+    }
+
+    private static Map<String, String> load(ServerLevel level) {
+        Map<String, String> map = new LinkedHashMap<>();
         try {
             Path f = file(level);
             if (!Files.exists(f)) return map;
             for (String line : Files.readAllLines(f)) {
-                int i = line.indexOf('=');
-                if (i <= 0) continue;
-                try {
-                    map.put(UUID.fromString(line.substring(0, i).trim()),
-                            UUID.fromString(line.substring(i + 1).trim()));
-                } catch (IllegalArgumentException ignored) {}
+                String s = line.trim();
+                if (s.isEmpty() || s.startsWith("#")) continue;
+                int i = s.indexOf('=');
+                if (i > 0) map.put(s.substring(0, i).trim(), s.substring(i + 1).trim());
             }
         } catch (Throwable ignored) {}
         return map;
     }
 
-    private static void save(ServerLevel level, Map<UUID, UUID> map) {
+    private static void save(ServerLevel level, Map<String, String> map) {
         try {
             List<String> lines = new ArrayList<>();
-            map.forEach((a, t) -> lines.add(a + "=" + t));
+            lines.add("# hexie train bindings & state");
+            map.forEach((k, v) -> lines.add(k + "=" + v));
             Files.write(file(level), lines);
         } catch (Throwable t) {
             HexieTrain.LOGGER.warn("[HexieTrain][bind] 写绑定文件失败: {}", t.toString());
@@ -57,24 +77,39 @@ public final class TrainBindings {
     /** 取该结构的列车 UUID；没有就新建一条并落盘。 */
     public static UUID resolve(ServerLevel level, UUID structure) {
         if (level == null || structure == null) return null;
-        Map<UUID, UUID> map = load(level);
-        UUID train = map.get(structure);
-        if (train == null) {
-            train = UUID.randomUUID();
-            map.put(structure, train);
-            save(level, map);
-            HexieTrain.LOGGER.info("[HexieTrain][bind] 新建绑定 {} → {} （{}）", structure, train, file(level));
+        Map<String, String> map = load(level);
+        String key = "bind." + structure;
+        String v = map.get(key);
+        if (v != null) {
+            try { return UUID.fromString(v); } catch (IllegalArgumentException ignored) {}
         }
+        UUID train = UUID.randomUUID();
+        map.put(key, train.toString());
+        save(level, map);
+        HexieTrain.LOGGER.info("[HexieTrain][bind] 新建绑定 {} → {} （{}）", structure, train, file(level));
         return train;
     }
 
-    /** 破坏调度器时删除该结构的绑定。 */
+    /** 破坏调度器：删除该结构的绑定与状态。 */
     public static void remove(ServerLevel level, UUID structure) {
         if (level == null || structure == null) return;
-        Map<UUID, UUID> map = load(level);
-        if (map.remove(structure) != null) {
-            save(level, map);
-            HexieTrain.LOGGER.info("[HexieTrain][bind] 已从绑定文件删除结构 {}", structure);
-        }
+        Map<String, String> map = load(level);
+        String prefix = "state." + structure;
+        boolean changed = map.keySet().removeIf(k -> k.equals("bind." + structure) || k.startsWith(prefix));
+        if (changed) { save(level, map); HexieTrain.LOGGER.info("[HexieTrain][bind] 已从文件删除结构 {}", structure); }
+    }
+
+    /** 写入实时状态（调用方负责节流，例如每 20 tick 一次）。 */
+    public static void writeState(ServerLevel level, UUID structure, double speed, double x, double y, double z,
+                                  String mode, String dest, double leg) {
+        if (level == null || structure == null) return;
+        Map<String, String> map = load(level);
+        String p = "state." + structure + ".";
+        map.put(p + "speed", String.format("%.2f", speed));
+        map.put(p + "pos", String.format("%.1f, %.1f, %.1f", x, y, z));
+        map.put(p + "mode", mode);
+        map.put(p + "dest", dest == null ? "-" : dest);
+        map.put(p + "leg", String.format("%.1f", leg));
+        save(level, map);
     }
 }
