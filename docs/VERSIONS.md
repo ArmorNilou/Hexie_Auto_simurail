@@ -23,3 +23,13 @@
   - `@Accessor` 借出 Train 的 private `updateNavigationTarget` / `collideWithOtherTrains`
   - 位置由 `CreateRouteBinding.traversePoints(from,to,listener)` 补放边点事件
 - 回退方法：`git checkout v0.3.0-saved -- src/main/java/willow/train/hexietrain/`
+## 0.5.0（按六条规格重构，进行中）
+1. 三模态：未绑定 / 玩家操控中 / 自动驾驶中（有侧面红石即玩家操控）
+2. 右上角按钮切换玩家操控↔自动驾驶（未绑定不可自动）
+3. 调度状态真实赋值 IDLE / RUNNING / BRAKING
+4. 三个无线通道只做 刹车 / 左岔道 / 右岔道，与运行方向无关
+5. 模式切换不拆车，导航可续（保留 currentEntry）
+6. `assemblyId ↔ trainId` 持久绑定，独立世界存档 `<世界>/data/hexie_train_bindings.dat`
+
+已完成：第 6 条（TrainBindingData + TrainBinder 复用 UUID）
+待完成：第 1~5 条
