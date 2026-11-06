@@ -494,20 +494,23 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         boolean manual = leftSignal() > 0 || rightSignal() > 0;
         if (manual != manualMode) { manualMode = manual; setChanged(); sendData(); }
     }
-
     /**
-     * 一次判定：方块的"左"是否等于虚拟列车的前进方向。
-     * 依据 Simurail 转向架：getMovementSpeed() 已是整条传动链累乘后的行驶速度，
+     * 方向判定：方块的"左"是否等于虚拟列车的前进方向。
+     *
+     * <p>依据 Simurail 转向架：getMovementSpeed() 是整条传动链累乘后的行驶速度（带符号），
      * 乘上 getDirection() 再投影到轨道切线，就是"这组输出让车沿轨道往哪走"。
+     *
+     * <p>关键：车静止时 getMovementSpeed()=0，此时**不能**缓存默认值，
+     * 否则永远不会再判定（实测就是这样失效的）。未判定时返回临时值，但不写入字段。
      */
     private boolean leftPolarity() {
         if (leftIsForward != null) return leftIsForward;
-        leftIsForward = true;
+        boolean provisional = true;
         try {
             Train train = Create.RAILWAYS.trains.get(boundTrain);
-            if (train == null || train.carriages.isEmpty() || !(level instanceof ServerLevel sl)) return true;
+            if (train == null || train.carriages.isEmpty() || !(level instanceof ServerLevel sl)) return provisional;
             var lp = train.carriages.get(0).getLeadingPoint();
-            if (lp == null || lp.edge == null) return true;
+            if (lp == null || lp.edge == null) return provisional;
             var tan = lp.edge.getDirection(true);
             double best = 0;
             for (net.minecraft.core.BlockPos bp : net.minecraft.core.BlockPos.betweenClosed(
@@ -521,14 +524,13 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                     if (Math.abs(dot) > Math.abs(best)) best = dot;
                 } catch (Throwable ignored) {}
             }
-            if (Math.abs(best) > 1.0E-4) {
-                leftIsForward = best > 0;
-                HexieTrain.LOGGER.info("[HexieTrain][dir] dot={} 左是前进={}", String.format("%.3f", best), leftIsForward);
-            } else {
-                HexieTrain.LOGGER.info("[HexieTrain][dir] 转向架速度为 0，沿用默认 左是前进=true");
+            if (Math.abs(best) > 1.0E-3) {
+                leftIsForward = best > 0;          // ← 只有真的测到才锁定
+                HexieTrain.LOGGER.info("[HexieTrain][dir] dot={} → 左是前进={}", String.format("%.3f", best), leftIsForward);
+                return leftIsForward;
             }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][dir] {}", t.toString()); }
-        return leftIsForward;
+        return provisional;                        // 未测到：返回临时值，不缓存
     }
 
     /**
