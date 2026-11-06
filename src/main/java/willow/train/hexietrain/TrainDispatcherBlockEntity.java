@@ -442,6 +442,17 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                     boundTrain == null ? "-" : boundTrain.toString().substring(0, 8),
                     worldPosition.toShortString());
         }
+        // 实时状态写回世界存档（每 20 tick 一次，避免频繁 IO）
+        if (level instanceof ServerLevel slSt && assemblyId != null && stateProbeTicks++ % 20 == 0) {
+            Train st = boundTrain == null ? null : Create.RAILWAYS.trains.get(boundTrain);
+            String mode = manualMode ? "MANUAL" : (boundTrain == null ? "IDLE" : "AUTO");
+            String dest = (st != null && st.navigation != null && st.navigation.destination != null)
+                    ? st.navigation.destination.name : "-";
+            double sp = 0; try { sp = Math.abs(measuredSpeedMps()); } catch (Throwable ignored) {}
+            TrainBindings.writeState(slSt, assemblyId, sp,
+                    worldPosition.getX() + 0.5, worldPosition.getY() + 0.5, worldPosition.getZ() + 0.5,
+                    mode, dest, legRemaining);
+        }
         updateMeasuredSpeed();
         try {
             if (boundTrain != null && !Create.RAILWAYS.trains.containsKey(boundTrain)) {
@@ -882,6 +893,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 真正建车的私有动作，只被 syncTrainPresence 调用。 */
     private void bindTrainNow() {
         if (!(level instanceof ServerLevel serverLevel)) return;
+        // 物理结构 UUID：解析并缓存（同一结构永远映射同一列车 UUID）
+        if (assemblyId == null) {
+            try { var sub = SubLevelSuspend.containing(serverLevel, worldPosition); if (sub != null) assemblyId = sub.getUniqueId(); } catch (Throwable ignored) {}
+        }
+        if (assemblyId != null) TrainBinder.PENDING_TRAIN_ID = TrainBindings.resolve(serverLevel, assemblyId);
         try {
             TrainBinder.Result result = TrainBinder.bind(serverLevel, worldPosition, scheduleSlot, owner);
             lastBindMessage = result.message();
