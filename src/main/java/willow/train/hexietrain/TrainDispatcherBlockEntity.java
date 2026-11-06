@@ -550,6 +550,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     private int probeTicks = 0;
     /** 供 TrainBinder 查询：该位置方块已绑定的列车 UUID（没有则 null）。 */
+    /** 供 ticker 判断优先级用。 */
+    public UUID persistentTrainId() { return persistentTrainId; }
+
     public static UUID pendingTrainId(ServerLevel level, net.minecraft.core.BlockPos pos) {
         try {
             if (level.getBlockEntity(pos) instanceof TrainDispatcherBlockEntity be) return be.persistentTrainId;
