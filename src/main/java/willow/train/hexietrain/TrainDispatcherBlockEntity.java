@@ -523,6 +523,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             // 玩家给红石 → 单向切手动（要恢复请点 UI 或重设列车）
             if (redstonePresent) {
                 if (!manualMode) setManualMode(true);   // 内部会调 syncTrainPresence：注销虚拟列车、通道归零
+                setDispatcherState(DispatcherState.RUNNING);   // 手操且正在被红石驱动
                 double dir = left > 0 ? 1.0 : -1.0;
                 double mag = Math.max(left, right) / 15.0;
                 train.manualTick = true;
@@ -531,9 +532,21 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 return;
             }
             // 手动模式：blockstate 由 Block.neighborChanged 独占，我们绝不写（否则会抹掉红石状态）
-            if (manualMode) { SetOutputBrake(15); return; }
+            if (manualMode) { setDispatcherState(DispatcherState.IDLE); SetOutputBrake(15); return; }
 
             driveToStation(train);
+            // 四态赋值：待命 / 行驶中 / 滑车 / 急刹
+            try {
+                if (train.navigation.destination == null) {
+                    setDispatcherState(DispatcherState.IDLE);
+                } else if (output(SignalChannel.BRAKE) > 0) {
+                    setDispatcherState(DispatcherState.BRAKING);
+                } else if (Math.abs(autoDirection) < 1.0E-4f && Math.abs(measuredSpeedMps()) > 0.1) {
+                    setDispatcherState(DispatcherState.COASTING);
+                } else {
+                    setDispatcherState(DispatcherState.RUNNING);
+                }
+            } catch (Throwable ignored) {}
         } catch (Throwable t) {
             HexieTrain.LOGGER.warn("[HexieTrain][auto] 异常: {}", t.toString());
         }
