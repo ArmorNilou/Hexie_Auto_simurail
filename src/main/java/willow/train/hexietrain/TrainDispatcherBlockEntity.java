@@ -382,21 +382,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     // ══════════════════════ 驾驶模式 ══════════════════════
 
     /** 物理车沿轨位移（格/tick，带符号），供速度注入 mixin 使用。 */
-    public double physicalSpeedPerTick() {
-        try {
-            double v = bodySpeedAlongTrackBps();
-            Train t = Create.RAILWAYS.trains.get(boundTrain);
-            if (t != null && !t.carriages.isEmpty()) {
-                var p = t.carriages.getFirst().getLeadingPoint();
-                if (p != null && p.edge != null) {
-                    var tan = p.edge.getDirection(false);          // node1 → node2 = 虚拟车的前进方向
-                    double dot = measuredVelocity.x * tan.x + measuredVelocity.y * tan.y + measuredVelocity.z * tan.z;
-                    return (dot >= 0 ? 1.0 : -1.0) * Math.abs(v) / 20.0;   // 让虚拟车沿自己的边前进
-                }
-            }
-            return v / 20.0;
-        } catch (Throwable t2) { return 0.0; }
-    }
+    public double physicalSpeedPerTick() { try { return bodySpeedAlongTrackBps() / 20.0; } catch (Throwable t) { return 0.0; } }
     public boolean manualMode() {
         return manualMode;
     }
@@ -744,6 +730,26 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 if (dd > 8.0) { dwellingStation = null; HexieTrain.LOGGER.info("[HexieTrain][depart] 物理车已离开 {}", st.name); }
                 return;
             }
+
+            // ★ 方向判定（唯一来源）：速度矢量 与 导航目标 的一致性，10 tick 稳定窗口
+            try {
+                double vt   = bodySpeedAlongTrackBps();
+                double want = nav.destinationBehindTrain ? -1.0 : 1.0;
+                if (!polarityFixed) {
+                    if (Math.abs(vt) > 0.8) {
+                        if (Math.signum(vt) != Math.signum(want)) {
+                            if (--dirAgreeTicks <= -10) {
+                                boolean cur = (leftIsForward == null) ? true : leftIsForward;
+                                leftIsForward = !cur; polarityFixed = true;
+                                HexieTrain.LOGGER.info("[HexieTrain][dir] 连续逆行(vtrack={}, want={}) → 翻转极性={}", String.format("%.2f", vt), want, leftIsForward);
+                            }
+                        } else if (++dirAgreeTicks >= 10) {
+                            polarityFixed = true;
+                            HexieTrain.LOGGER.info("[HexieTrain][dir] 连续一致(vtrack={}, want={}) → 极性正确", String.format("%.2f", vt), want);
+                        }
+                    } else dirAgreeTicks = 0;
+                }
+            } catch (Throwable ignored) {}
 
             // ③b 传动方向 + ④ 刹车：目标速度曲线（照抄和谐的 BrakingCurve）
             // v_allow = sqrt(target² + 2·a·d)   —— 当前位置允许的最高速度
