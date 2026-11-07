@@ -266,13 +266,18 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      */
     private int sideSignal(boolean left) {
         if (level == null) return 0;
-        // 垂直朝向也不能崩：统一走 Block 的安全方向表
-        Direction facing = getBlockState().getValue(TrainDispatcherBlock.FACING);
-        Direction dir = left ? getBlockState().getValue(TrainDispatcherBlock.FACING)
-                            : getBlockState().getValue(TrainDispatcherBlock.FACING).getOpposite();
-        int direct = level.getSignal(worldPosition, dir);
-        int indirect = level.getBestNeighborSignal(worldPosition.relative(dir));
-        return Math.max(direct, indirect);
+        try {
+            // 读所有 6 个面的直连信号与邻方块充能，取最强（原来只读 FACING 前后两个面，
+            // 导致侧面红石/无线接收器完全读不到 → 无时刻表时被误判为"未绑定"）
+            int best = 0;
+            for (Direction d : Direction.values()) {
+                best = Math.max(best, level.getSignal(worldPosition, d));
+                best = Math.max(best, level.getBestNeighborSignal(worldPosition.relative(d)));
+            }
+            return best;
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     private Direction horizontalFacing() {
