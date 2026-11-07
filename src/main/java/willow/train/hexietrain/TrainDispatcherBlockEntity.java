@@ -530,6 +530,18 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             if (train == null) return;
             ensureConductors(train);
 
+            // 条件列为空 → tickConditions 循环 0 次 → 永远停在 POST_TRANSIT，entry 不动
+            try {
+                var rt0 = train.runtime;
+                if (rt0.schedule != null && rt0.currentEntry >= 0 && rt0.currentEntry < rt0.schedule.entries.size()) {
+                    var conds0 = rt0.schedule.entries.get(rt0.currentEntry).conditions;
+                    if (conds0.isEmpty()) {
+                        conds0.add(new java.util.ArrayList<>());
+                        HexieTrain.LOGGER.info("[HexieTrain][sched] 补空条件列 entry={}（否则到站后永不推进）", rt0.currentEntry);
+                    }
+                }
+            } catch (Throwable ignored) {}
+
             // ── 飞行记录仪：一次测试收集全部状态 ──
             if (!isPrimaryDispatcher()) return;   // 只让主调度器打日志，副本不刷屏
             try {
