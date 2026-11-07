@@ -790,13 +790,15 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
             // 需求 8：解耦期间不干预 Create —— 让它自己驱动虚拟车进站（否则 targetSpeed=0 会把它按住不动）
             if (docking) {
                 // 解耦期间：虚拟车交给 Create（我们不碰），物理车由我们独立刹到站台 —— 两条线程互不干扰
-                double dPhys2 = 0;
+                double dPhys2 = train.navigation.distanceToDestination;   // 沿轨距离（此前漏赋值，恒为 0 → 刹车与方向全部失真）
                 double vNow2 = Math.abs(measuredSpeedMps());
                 double targetV2 = dPhys2 > SLOW_ZONE_BLOCKS ? Double.MAX_VALUE
                         : Math.max(CREEP_SPEED_MPS, SLOW_ZONE_SPEED_MPS * (dPhys2 / SLOW_ZONE_BLOCKS));
-                SetOutputBrake(vNow2 > targetV2 + 0.25 ? SignalChannel.brakeStrength(dPhys2, vNow2 / 20.0, linearizeBrake) : 0);
-                setAutoDirection(dPhys2 > 0.5 ? (float) (train.navigation.destinationBehindTrain ? -1.0 : 1.0) : 0f);
-                if (dPhys2 <= 0.5 && vNow2 <= 0.05) SetOutputBrake(15);   // 物理车停稳在站台
+                int b2 = (vNow2 > targetV2 + 0.25) ? SignalChannel.brakeStrength(dPhys2, vNow2 / 20.0, linearizeBrake) : 0;
+                if (dPhys2 <= 0.5 && vNow2 <= 0.05) b2 = 15;                       // 停稳在站台：满刹保持
+                SetOutputBrake(b2);
+                // 刹车时不输出扭矩，否则"刹-推"来回振荡，永远停不下来
+                setAutoDirection(b2 > 0 ? 0f : (dPhys2 > 0.5 ? (float) (train.navigation.destinationBehindTrain ? -1.0 : 1.0) : 0f));
                 return;
             }
             // 速度由 mixin 每 tick 注入物理位移，不再冻结
