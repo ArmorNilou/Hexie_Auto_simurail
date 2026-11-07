@@ -192,6 +192,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** true = 玩家操控中（暂停自动寻路）；false = 自动驾驶中。 */
     /** 进站解耦（需求 8）：true 时虚拟车自己进站、物理车自理。 */
     private boolean docking = false;
+    private double lastSignalDist = -1;   // 用来识别"过了一个信号机"（距离被重置变大）
     private GlobalStation lastStation = null;
     private boolean manualMode = false;
 
@@ -730,32 +731,34 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             nav.distanceToDestination = legRemaining;
             double v = Math.abs(measuredSpeedMps());
 
-            // ③ 停站锁：物理车没离开就不重复判到站
+            // ③ 停站锁：只有物理车真在站台旁（<=10m，和谐 StationStopControl 的到站窗口）才保持；
+            //     否则解除锁、继续把车开过去 —— 修"站台判定无条件锁死物理车"（需求 6）
             if (dwellingStation != null) {
-                SetOutputBrake(15);
                 double dd = 0;
                 try { dd = physicalDistanceTo(st); } catch (Throwable ignored) {}
-                if (dd > 8.0) { dwellingStation = null; HexieTrain.LOGGER.info("[HexieTrain][depart] 物理车已离开 {}", st.name); }
-                return;
+                if (dd <= 10.0) {
+                    SetOutputBrake(15);
+                    return;
+                }
+                dwellingStation = null;
+                HexieTrain.LOGGER.info("[HexieTrain][depart] 物理车不在站台旁（{}）→ 解除停站锁，继续进站", String.format("%.1f", dd));
             }
 
-            // ★ 方向判定（唯一来源）：速度矢量 与 导航目标 的一致性，10 tick 稳定窗口
+            // 需求 1/2：前进方向 = 速度矢量 与 导航路径方向 是否一致；只在"过一个信号机"时判一次
             try {
-                double vt   = bodySpeedAlongTrackBps();
-                double want = nav.destinationBehindTrain ? -1.0 : 1.0;
-                if (!polarityFixed) {
-                    if (Math.abs(vt) > 0.8) {
-                        if (Math.signum(vt) != Math.signum(want)) {
-                            if (--dirAgreeTicks <= -10) {
-                                boolean cur = (leftIsForward == null) ? true : leftIsForward;
-                                leftIsForward = !cur; polarityFixed = true;
-                                HexieTrain.LOGGER.info("[HexieTrain][dir] 连续逆行(vtrack={}, want={}) → 翻转极性={}", String.format("%.2f", vt), want, leftIsForward);
-                            }
-                        } else if (++dirAgreeTicks >= 10) {
-                            polarityFixed = true;
-                            HexieTrain.LOGGER.info("[HexieTrain][dir] 连续一致(vtrack={}, want={}) → 极性正确", String.format("%.2f", vt), want);
+                double dSigNow = nav.distanceToSignal;
+                if (Double.isFinite(dSigNow) && dSigNow < 1.0E6) {                 // MAX_VALUE = 前方无信号机
+                    boolean crossed = lastSignalDist >= 0 && lastSignalDist < 1.0E6 && dSigNow > lastSignalDist + 1.0;
+                    lastSignalDist = dSigNow;
+                    if (crossed) {
+                        double vt   = bodySpeedAlongTrackBps();
+                        double want = nav.destinationBehindTrain ? -1.0 : 1.0;
+                        if (Math.abs(vt) > 0.8 && Math.signum(vt) != Math.signum(want)) {
+                            leftIsForward = !(leftIsForward == null ? true : leftIsForward);
+                            HexieTrain.LOGGER.info("[HexieTrain][dir] 过信号机：速度矢量({}) 与导航路径({}) 不一致 → 交换输出侧={}",
+                                    String.format("%.2f", vt), want, leftIsForward);
                         }
-                    } else dirAgreeTicks = 0;
+                    }
                 }
             } catch (Throwable ignored) {}
 
