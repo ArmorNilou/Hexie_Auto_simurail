@@ -1128,6 +1128,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         super.write(tag, registries, clientPacket);
         if (boundTrain != null) tag.putUUID("BoundTrain", boundTrain);
         tag.putBoolean("ManualMode", manualMode);
+        if (leftIsForward != null) tag.putBoolean("LeftIsForward", leftIsForward);   // 记住哪一侧是前进，避免 BE 重建后回到默认
         if (owner != null) tag.putUUID("Owner", owner);
         // 方块特性：玩家在 UI 里调的制动灵敏度
         if (!scheduleSlot.isEmpty()) tag.put("Schedule", sanitizedSchedule().save(registries));
@@ -1151,6 +1152,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             HexieTrain.LOGGER.info("[HexieTrain] 从存档恢复列车绑定 {}", boundTrain);
         }
         manualMode = tag.getBoolean("ManualMode");
+        if (tag.contains("LeftIsForward")) leftIsForward = tag.getBoolean("LeftIsForward");   // 恢复方向判定结果
         owner = tag.hasUUID("Owner") ? tag.getUUID("Owner") : null;
         // 方块特性：制动灵敏度（缺省 3.0 格/秒²）
 
