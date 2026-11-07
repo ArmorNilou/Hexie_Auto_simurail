@@ -109,6 +109,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 蠕行速度：保证车头点能跨过站点，否则永远触发不了到站。 */
     private static final double CREEP_SPEED_MPS = 0.3;
+    private static final double BRAKE_DECEL = 1.5;   // 期望减速度 m/s²（BrakingCurve 用）
     private static final double STOP_ZONE = 3.0;   // 格：进入此距离切断扭矩
 
     /** 期望制动减速度（m/s²），用于估算"还要滑多远"。先给常量，实测后调。 */
@@ -750,25 +751,30 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 }
             } catch (Throwable ignored) {}
 
-            // ③b 传动方向：驱动本方块自己的左右红石通道（自动模式的唯一动力来源）
-            double stopZone = Math.max(STOP_ZONE, Math.abs(measuredSpeedMps()) * 1.2);   // 按速度动态
-            double dLeft = Math.max(0.0, legRemaining);   // 刹车距离：用我们自己的物理推进距离（legRemaining）
-            double brakeFrac = dLeft >= stopZone ? 0.0 : 1.0 - dLeft / stopZone;   // 0→1，越近越强
-            int brakeVal = (int) Math.round(15.0 * brakeFrac);
-            if (dLeft < 1.0) brakeVal = 15;                                        // 1 格内最强刹
-            if (legRemaining <= stopZone) {
-                if (Math.abs(measuredSpeedMps()) > 0.4)
-                    setAutoDirection((float) -(nav.destinationBehindTrain ? -1.0 : 1.0));   // 反转扭矩制动
-                else
-                    setAutoDirection(0f);                                                    // 停稳后切断
-            } else {
-                setAutoDirection((float) (nav.destinationBehindTrain ? -1.0 : 1.0));
-            }
+            // ③b 传动方向 + ④ 刹车：目标速度曲线（照抄和谐的 BrakingCurve）
+            // v_allow = sqrt(target² + 2·a·d)   —— 当前位置允许的最高速度
+            double dLeft = Math.max(0.0, legRemaining);
+            double decel  = BRAKE_DECEL;                       // 期望减速度 m/s²
+            double vAllow = Math.sqrt(2.0 * decel * dLeft);    // 目标速度 = 0（停在站上）
 
-            // ④ 刹车
-            double targetV = legRemaining > SLOW_ZONE_BLOCKS ? Double.MAX_VALUE
-                    : Math.max(CREEP_SPEED_MPS, SLOW_ZONE_SPEED_MPS * (legRemaining / SLOW_ZONE_BLOCKS));
-            SetOutputBrake(Math.max(brakeVal, v > targetV + 0.25 ? SignalChannel.brakeStrength(legRemaining, v / 20.0, linearizeBrake) : 0));
+            int brakeVal = 0;
+            if (vNow > vAllow) {
+                double over = (vNow - vAllow) / Math.max(vNow, 1.0E-3);   // 超出允许速度的比例
+                brakeVal = (int) Math.round(15.0 * Math.min(1.0, over));
+            }
+            if (dLeft < 1.0) brakeVal = 15;                    // 1 格内最强刹
+
+            float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
+            if (dLeft <= 3.0 && vNow > 0.4) setAutoDirection(-navDir);   // 近距离滑行：反转顶住
+            else if (dLeft < 1.0 && vNow <= 0.4) setAutoDirection(0f);   // 停稳切断
+            else setAutoDirection(navDir);
+
+            // 到站保持（照抄和谐的 StationStopControl 判据：速度≈0 且距站 ≤10 米）
+            double dPhys = 0;
+            try { dPhys = physicalDistanceTo(st); } catch (Throwable ignored) {}
+            if (vNow <= 0.05 && dPhys <= 10.0) brakeVal = 15;  // 已停稳在站内：满刹保持
+
+            SetOutputBrake(brakeVal);
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][auto] {}", t.toString()); }
     }
 
