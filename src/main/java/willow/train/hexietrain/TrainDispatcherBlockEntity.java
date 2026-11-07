@@ -771,6 +771,15 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
 
     private void driveToStation(Train train) {
         try {
+            // 诊断：每秒报告一次各闸门状态（不改逻辑）
+            if (diagTicks % 20 == 0) {
+                try {
+                    HexieTrain.LOGGER.info("[HexieTrain][gate] docking={} derailed={} invalid={} primary={} dest={} leg={}",
+                            docking, train.derailed, train.invalid, isPrimaryDispatcher(),
+                            train.navigation == null || train.navigation.destination == null ? "null" : train.navigation.destination.name,
+                            String.format("%.1f", legRemaining));
+                } catch (Throwable ignored) {}
+            }
             // 需求 8：解耦期间不干预 Create —— 让它自己驱动虚拟车进站（否则 targetSpeed=0 会把它按住不动）
             if (docking) {
                 // 解耦期间：虚拟车交给 Create（我们不碰），物理车由我们独立刹到站台 —— 两条线程互不干扰
