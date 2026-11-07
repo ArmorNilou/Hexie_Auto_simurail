@@ -427,19 +427,12 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                         // 播报：玩家接管
                     } else {
                         train.runtime.paused = false;          // 恢复自动巡航
-                        // 切回自动驾驶：立刻试一次寻路，并把结果播报给车主
-                        var stations9 = new java.util.ArrayList<com.simibubi.create.content.trains.station.GlobalStation>(
-                                train.graph.getPoints(com.simibubi.create.content.trains.graph.EdgePointType.STATION));
-                        var path9 = train.navigation.findPathTo(stations9, Double.MAX_VALUE);
-                        if (path9 != null) {
-                            try { train.status.successfulNavigation(); } catch (Throwable ignored) { }
-                            HexieTrain.LOGGER.info("[HexieTrain][path] 导航成功");
-                        } else {
-                            String target9 = stations9.isEmpty() ? "" : stations9.get(0).name;
-                            try { train.status.failedNavigationNoTarget(target9); } catch (Throwable ignored) { }
-                            HexieTrain.LOGGER.info("[HexieTrain][path] 找不到可用路径（目标 {}）", target9);
-                        }
+                        // 不自己做寻路：交给 ScheduleRuntime 按 currentEntry 的目的地重新规划
+                        train.navigation.cancelNavigation();
+                        train.runtime.state = com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.PRE_TRANSIT;
+                        HexieTrain.LOGGER.info("[HexieTrain][path] 交由时刻表重新规划（entry={}）", train.runtime.currentEntry);
                         train.manualTick = false;
+                        train.targetSpeed = 0;
                         train.targetSpeed = 0;
                     }
                 } catch (Throwable ignored) {
