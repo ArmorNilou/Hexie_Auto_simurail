@@ -142,6 +142,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private Boolean leftIsForward = null;
     private Object lastNavDest = null;      // 上一次的导航目标；变化 = 虚拟车重新启动导航
     private double lastSignalDist = -1;    // 上一次的"到下一信号机的距离"，用来判断是否过了一个信号机
+    private double lastDDest = -1;        // 上一次的到站距离，用来判断"是否在靠近站台"
     private boolean dirResolved = false;     // 本段方向是否已判定（判完不再计算）
     private boolean dirProbing = false;      // 是否正在做 1tick 传动探针
     private int dirProbeTicks = 0;
@@ -757,10 +758,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             lastSignalDist = dSigNow;
             try {
                 if (!dirResolved) {
+                    double dNow = nav.distanceToDestination;
                     double want = nav.destinationBehindTrain ? -1.0 : 1.0;
                     double vt   = bodySpeedAlongTrackBps();
-                    if (Math.abs(vt) > 0.8) {
-                        if (Math.signum(vt) != Math.signum(want)) {
+                    if (Math.abs(vt) > 0.8 && lastDDest >= 0) {
+                        if (dNow > lastDDest + 0.05) {   // 在动但离站台更远 → 方向反了
                             leftIsForward = !(leftIsForward == null ? true : leftIsForward);
                             HexieTrain.LOGGER.info("[HexieTrain][dir] 速度矢量({}) 与导航路径({}) 不一致 → 交换输出侧={}", String.format("%.2f", vt), want, leftIsForward);
                         } else {
@@ -776,6 +778,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                         if (Math.abs(after) > 0.3 && Math.signum(after) != Math.signum(want)) {
                             leftIsForward = !(leftIsForward == null ? true : leftIsForward);
                             HexieTrain.LOGGER.info("[HexieTrain][dir] 1tick 探针：车朝反方向动({}) → 交换输出侧={}", String.format("%.2f", after), leftIsForward);
+                    if (dNow >= 0 && dNow < 1.0E6) lastDDest = dNow;
                         } else {
                             HexieTrain.LOGGER.info("[HexieTrain][dir] 1tick 探针：方向正确(after={})", String.format("%.2f", after));
                         }
