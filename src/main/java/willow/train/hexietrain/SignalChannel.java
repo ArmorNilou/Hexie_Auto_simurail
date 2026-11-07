@@ -84,6 +84,15 @@ public enum SignalChannel {
      * @param speed     当前速度（格/tick）
      * @param linearize true 时做平方根补偿（Simurail 内部会平方）
      */
+    public static int brakeStrength(double distance, double speed, boolean linearize) {
+        if (distance <= 0) return 15;
+
+        double s = 1.0 - clamp01(distance / BRAKE_HORIZON);   // 单调：越近越强
+        if (speed <= 1.0E-4 && distance >= 1.0) return 0;      // 停稳且离站还远：不刹
+
+        double v = linearize ? Math.sqrt(s) : s;
+        return (int) Math.round(v * 15.0);
+    }
 
     /**
      * 多段制动：摩擦刹车压不住速度时，才逐级增加反向传动。
@@ -97,4 +106,14 @@ public enum SignalChannel {
      *   <li>2 = 摩擦远远不够，全反向</li>
      * </ul>
      */
+    public static int reverseStage(double distance, double speed, int brakeStrength) {
+        if (speed <= 0.02 || distance <= 0.01) return 0;
+
+        double needed = speed * speed / (2.0 * distance);   // 所需减速度（格/tick²）
+        double frictionCap = 0.004 * Math.max(1, brakeStrength);   // 摩擦能给的减速度
+
+        if (needed <= frictionCap) return 0;
+        if (needed <= frictionCap * 2.0) return 1;
+        return 2;
+    }
 }

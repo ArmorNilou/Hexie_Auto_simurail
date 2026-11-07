@@ -313,7 +313,14 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
     public static void reanchor(Train train, ServerLevel level, BlockPos center) {
         try {
             if (train == null || train.carriages.isEmpty()) return;
-            java.util.List<PhysicsBogeyBlockEntity> all = cachedBogeys(level, center);
+            java.util.List<PhysicsBogeyBlockEntity> all = new java.util.ArrayList<>();
+            BlockPos.MutableBlockPos cur = new BlockPos.MutableBlockPos();
+            for (int dx = -SCAN_H; dx <= SCAN_H; dx++)
+                for (int dy = -SCAN_V; dy <= SCAN_V; dy++)
+                    for (int dz = -SCAN_H; dz <= SCAN_H; dz++) {
+                        cur.set(center.getX() + dx, center.getY() + dy, center.getZ() + dz);
+                        if (level.getBlockEntity(cur) instanceof PhysicsBogeyBlockEntity bg) all.add(bg);
+                    }
             if (all.isEmpty()) return;
             for (int i = 0; i < train.carriages.size(); i++) {
                 Carriage car = train.carriages.get(i);
@@ -325,31 +332,6 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
                 if (bp != null) copyInto(bp, car.getTrailingPoint());
             }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][anchor] {}", t.toString()); }
-    }
-
-    /** 转向架列表缓存：同一位置每 200 tick 重建一次，避免每 tick 扫 2025 个坐标。 */
-    private static final java.util.Map<Long, java.util.List<PhysicsBogeyBlockEntity>> BOGEY_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
-    private static final java.util.Map<Long, Long> BOGEY_CACHE_TIME = new java.util.concurrent.ConcurrentHashMap<>();
-
-    private static java.util.List<PhysicsBogeyBlockEntity> cachedBogeys(ServerLevel level, BlockPos center) {
-        long key = center.asLong();
-        long now = level.getGameTime();
-        var time = BOGEY_CACHE_TIME.get(key);
-        var list = BOGEY_CACHE.get(key);
-        boolean fresh = list != null && time != null && now - time < 200
-                && list.stream().noneMatch(be -> be.isRemoved());
-        if (fresh) return list;
-        java.util.List<PhysicsBogeyBlockEntity> all = new java.util.ArrayList<>();
-        BlockPos.MutableBlockPos cur = new BlockPos.MutableBlockPos();
-        for (int dx = -SCAN_H; dx <= SCAN_H; dx++)
-            for (int dy = -SCAN_V; dy <= SCAN_V; dy++)
-                for (int dz = -SCAN_H; dz <= SCAN_H; dz++) {
-                    cur.set(center.getX() + dx, center.getY() + dy, center.getZ() + dz);
-                    if (level.getBlockEntity(cur) instanceof PhysicsBogeyBlockEntity bg) all.add(bg);
-                }
-        BOGEY_CACHE.put(key, all);
-        BOGEY_CACHE_TIME.put(key, now);
-        return all;
     }
 
     /** 绝对写入：node1/node2/edge/position 全量覆盖（同 CRH-HeXie 的 copy）。 */

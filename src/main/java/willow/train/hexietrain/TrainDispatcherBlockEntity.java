@@ -109,7 +109,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 蠕行速度：保证车头点能跨过站点，否则永远触发不了到站。 */
     private static final double CREEP_SPEED_MPS = 0.3;
-    private static final double BRAKE_DECEL = 1.5;   // 期望减速度 m/s²（BrakingCurve 用）
     private static final double STOP_ZONE = 3.0;   // 格：进入此距离切断扭矩
 
     /** 期望制动减速度（m/s²），用于估算"还要滑多远"。先给常量，实测后调。 */
@@ -131,7 +130,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 速度传感器：上一 tick 测得的世界速度矢量（m/s，含旋转贡献）。 */
     private final org.joml.Vector3d measuredVelocity = new org.joml.Vector3d();
-    private int speedSampleAge = 0;
 
     /** 速度传感器：速度大小（m/s），低于 0.05 归零（与航空学一致）。 */
     private double measuredSpeedMps = 0;
@@ -140,21 +138,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private float autoDirection = 0f;
     /** 方块的"左"是否就是虚拟列车定义的前进方向（绑定/放置时一次判定，之后不变）。 */
     private Boolean leftIsForward = null;
-    private Object lastNavDest = null;      // 上一次的导航目标；变化 = 虚拟车重新启动导航
-    private double lastSignalDist = -1;    // 上一次的"到下一信号机的距离"，用来判断是否过了一个信号机
-    /** 进站解耦：true 时虚拟车自己走、物理车自理，二者暂不同步。 */
-    private boolean docking = false;
-    private GlobalStation lastStation = null;   // 上一个导航目标站（目标清空后仍可用于量距离）
-    private int dockTicks = 0;
-    private double lastDDest = -1;        // 上一次的到站距离，用来判断"是否在靠近站台"
-    private boolean anchorOnce = true;      // 只在建车/强制吸附时锚定一次，之后交给 Create 自己 travel
-    private boolean dirCheckPending = false;   // 过信号机时置位，下一 tick 看一眼
-    private boolean dirResolved = false;     // 本段方向是否已判定（判完不再计算）
-    private boolean dirProbing = false;      // 是否正在做 1tick 传动探针
-    private int dirProbeTicks = 0;
-    private int dirProbeCooldown = 0;
-    private boolean dirProbeBefore = true;
-    private double dirProbeStartSpeed = 0;
+    private boolean polarityFixed = false;   // 方向极性是否已锁定
+    private int dirAgreeTicks = 0;          // 连续一致/相反的 tick 计数
 
     /** 输出传动比 0~1：视距内按加速度渐变到 1，视距外直接用二进制。 */
     private float outputRatio = 0f;
@@ -233,6 +218,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
 
     /** true = 对刹车通道做平方根补偿（抵消转向架的 Mth.square）。 */
+    private boolean linearizeBrake = true;
 
 
     public TrainDispatcherBlockEntity(BlockPos pos, BlockState state) {
@@ -265,7 +251,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     public int externalRight() { return extRight; }
 
     /** 未绑定：没有时刻表且没有物理红石输入 → 不输出任何应力/通道。 */
-    public boolean isUnbound() { return scheduleSlot.isEmpty() && leftSignal() == 0 && rightSignal() == 0; }   // 直接读红石，不用快照
+    public boolean isUnbound() { return scheduleSlot.isEmpty() && extLeft == 0 && extRight == 0; }
     public int leftSignal() {
         return sideSignal(true);
     }
@@ -395,16 +381,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     // ══════════════════════ 驾驶模式 ══════════════════════
 
     /** 物理车沿轨位移（格/tick，带符号），供速度注入 mixin 使用。 */
-    /** 速度注入开关：进站解耦期间不注入，让 Create 自己驱动虚拟车。 */
-    public boolean shouldInjectSpeed() { return !docking; }
     public double physicalSpeedPerTick() { try { return bodySpeedAlongTrackBps() / 20.0; } catch (Throwable t) { return 0.0; } }
-
-    /** 由 mixin 在"跨过边点/信号机"时回调：只在这里允许重新判定方向。 */
-    public void onEdgePointCrossed() {
-        dirCheckPending = true;   // 过一个信号机：看一眼方向
-        dirProbing = false;
-        dirProbeCooldown = 0;
-    }
     public boolean manualMode() {
         return manualMode;
     }
@@ -523,26 +500,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 自动模式：方向与距离都来自 Create 的导航，我们只输出传动与刹车。 */
     private void tickAutomated() {
         try {
-            // 进入玩家手操 或 取走时刻表 → 立即合体：虚拟车跟回物理车（恢复注入与锚定）
-            if ((manualMode || isUnbound()) && docking) {
-                docking = false;
-                HexieTrain.LOGGER.info("[dock] 进入手操/未绑定 → 立即合体（虚拟车跟回物理车）");
-            }
             Train train = Create.RAILWAYS.trains.get(boundTrain);
             if (train == null) return;
             ensureConductors(train);
-
-            // 条件列为空 → tickConditions 循环 0 次 → 永远停在 POST_TRANSIT，entry 不动
-            try {
-                var rt0 = train.runtime;
-                if (rt0.schedule != null && rt0.currentEntry >= 0 && rt0.currentEntry < rt0.schedule.entries.size()) {
-                    var conds0 = rt0.schedule.entries.get(rt0.currentEntry).conditions;
-                    if (conds0.isEmpty()) {
-                        conds0.add(new java.util.ArrayList<>());
-                        HexieTrain.LOGGER.info("[HexieTrain][sched] 补空条件列 entry={}（否则到站后永不推进）", rt0.currentEntry);
-                    }
-                }
-            } catch (Throwable ignored) {}
 
             // ── 飞行记录仪：一次测试收集全部状态 ──
             if (!isPrimaryDispatcher()) return;   // 只让主调度器打日志，副本不刷屏
@@ -572,18 +532,12 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][diag] {}", t.toString()); }
 
             if (!isOwner()) return;   // 非认领者不得驱动
-            int left = leftSignal(), right = rightSignal();   // 直接读侧面红石（无线链路不触发 neighborChanged）
-            updateExternalInput(left, right);                  // 同步快照，供 UI 与状态文件使用
+            int left = extLeft, right = extRight;   // 只用物理红石（neighborChanged 维护），无线回环不进判定
             boolean redstonePresent = left > 0 || right > 0;
 
             // 玩家给红石 → 单向切手动（要恢复请点 UI 或重设列车）
             if (redstonePresent) {
-                    // 只改标志位，绝不调用 setManualMode()——它会 dissolve 列车并把我们的通道清零（红石一动就归零的根因）
-                    if (!manualMode) { manualMode = true; setChanged(); sendData(); }
-                    SetOutputBrake(0);   // 红石驱动时释放刹车，扭矩由红石经 blockstate 给
-                // 手操：强制把虚拟车吸附到物理车（不参与导航，但位置必须跟着走）
-                docking = false;
-                try { if (level instanceof ServerLevel slM) TrainBinder.reanchor(train, slM, worldPosition); } catch (Throwable ignored) {}
+                if (!manualMode) setManualMode(true);   // 内部会调 syncTrainPresence：注销虚拟列车、通道归零
                 setDispatcherState(DispatcherState.RUNNING);   // 手操且正在被红石驱动
                 double dir = left > 0 ? 1.0 : -1.0;
                 double mag = Math.max(left, right) / 15.0;
@@ -593,14 +547,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 return;
             }
             // 手动模式：blockstate 由 Block.neighborChanged 独占，我们绝不写（否则会抹掉红石状态）
-            if (manualMode) { setDispatcherState(DispatcherState.IDLE); SetOutputBrake(0);
-                docking = false;
-                try { if (level instanceof ServerLevel slM2) TrainBinder.reanchor(train, slM2, worldPosition); } catch (Throwable ignored) {}
-                return; }
+            if (manualMode) { setDispatcherState(DispatcherState.IDLE); SetOutputBrake(15); return; }
 
             driveToStation(train);
             // TP 锚定：把虚拟车厢的点直接摆到物理转向架位置（每 tick，绝对覆盖）
-            if (anchorOnce && level instanceof ServerLevel slA) { TrainBinder.reanchor(train, slA, worldPosition); anchorOnce = false; }
+            if (level instanceof ServerLevel slA) TrainBinder.reanchor(train, slA, worldPosition);
             // 四态赋值：待命 / 行驶中 / 滑车 / 急刹
             try {
                 if (train.navigation.destination == null) {
@@ -620,19 +571,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 未绑定：只做红石模式同步，不驱动任何东西。 */
     private void tickManual() {
-        int lSig = leftSignal(), rSig = rightSignal();
-        updateExternalInput(lSig, rSig);   // 无时刻表时也要同步快照
-        boolean hasRed = lSig > 0 || rSig > 0;
-        if (hasRed) {
-            // 没有时刻表 + 有红石 = 玩家操控（只改标志位，不触发 setManualMode 的副作用）
-            if (!manualMode) { manualMode = true; setChanged(); sendData(); }
-            SetOutputBrake(0);
-            setDispatcherState(DispatcherState.RUNNING);
-        } else {
-            SetOutputBrake(0);
-            setAutoDirection(0f);   // 无红石→清掉残余扭矩，避免解绑后按上次方向继续跑
-            setDispatcherState(DispatcherState.IDLE);
-        }
         if (isUnbound()) { SetOutputBrake(0); setAutoDirection(0f); setDispatcherState(DispatcherState.IDLE); return; }
         boolean manual = leftSignal() > 0 || rightSignal() > 0;
         // 红石只能单向把玩家拉进手操，绝不把玩家按下的手操改回自动（否则按钮会"弹回"）
@@ -655,7 +593,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      * </ol>
      */
     private void setAutoDirection(float dir) {
-        // 注意：不能因为 dir 未变就 return —— 极性可能刚被翻转，blockstate 必须重写
+        if (Math.abs(dir - autoDirection) < 1.0E-4f) return;
         autoDirection = dir;
         boolean pol = leftPolarity();
         boolean forward = dir > 0.001f, reverse = dir < -0.001f;
@@ -753,26 +691,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             if (train.derailed || train.invalid || !isPrimaryDispatcher()) return;
 
             var nav = train.navigation;
-            if (nav == null || nav.destination == null) {
-                // 到站后目标被清空：用上一个目标站判断物理车是否真的到了站台
-                if (lastStation != null) {
-                    double dPh2 = 0;
-                    try { dPh2 = physicalDistanceTo(lastStation); } catch (Throwable ignored) {}
-                    if (dPh2 > 3.0) {
-                        double vNow2 = Math.abs(measuredSpeedMps());
-                        double vAllow2 = Math.sqrt(2.0 * BRAKE_DECEL * Math.max(0.0, dPh2 - 1.5));
-                        SetOutputBrake(vNow2 > vAllow2 ? (int) Math.round(15.0 * Math.min(1.0, (vNow2 - vAllow2) / Math.max(vNow2, 1.0E-3))) : 0);
-                        if (Math.abs(autoDirection) > 1.0E-4f) setAutoDirection(autoDirection);   // 沿用方向蹭到站台
-                    } else {
-                        SetOutputBrake(15);
-                        setAutoDirection(0f);
-                    }
-                    return;
-                }
-            }
-
+            if (nav == null || nav.destination == null) return;
             GlobalStation st = nav.destination;
-            lastStation = st;                      // 记住目标站：目标清空后仍可用它量物理距离
 
             // ① 开始新段：记录沿轨长度
             if (pendingLeg >= 0 || st != lastLegDest || train.runtime.currentEntry != lastLegEntry || legRemaining < 0) {
@@ -781,76 +701,86 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 lastLegDest = st;
                 lastLegEntry = train.runtime.currentEntry;
                 HexieTrain.LOGGER.info("[HexieTrain][leg] → {} 沿轨长度={}", st.name, String.format("%.1f", legRemaining));
-                // 方向判定挂在"导航启动"上，不在这里重置
+                polarityFixed = false; dirAgreeTicks = 0;   // 新段重新判定方向
             }
 
             // ② 物理位移核减（带符号）
             double vNow = Math.abs(measuredSpeedMps());
             double moved = (nav.destinationBehindTrain ? -1.0 : 1.0) * vNow / 20.0;   // 用驾驶意图定符号，不用不可靠的切线投影
             legRemaining = Math.max(0.0, legRemaining - moved);
-            // 不回写 nav.distanceToDestination：那是 Create 自己的账，回写会互相污染
+            nav.distanceToDestination = legRemaining;
             double v = Math.abs(measuredSpeedMps());
 
-            // ══ 进站解耦状态机 ══
-            double dPhysNow = 0;
-            try { dPhysNow = physicalDistanceTo(st); } catch (Throwable ignored) {}
-            if (manualMode || scheduleSlot.isEmpty()) {
-                if (docking) { docking = false; HexieTrain.LOGGER.info("[dock] 手操/取表 → 取消解耦，虚拟车归位"); }
-            } else if (!docking && nav.destination != null
-                    && (nav.distanceToDestination <= 15.0 || dPhysNow <= 12.0)) {   // 以 Create 的沿轨距离为主判据
-                docking = true; dockTicks = 0;
-                HexieTrain.LOGGER.info("[dock] 进站解耦开始：沿轨距离={} 物理距离={} → 物理车自理，虚拟车独立进站",
-                        String.format("%.1f", nav.distanceToDestination), String.format("%.1f", dPhysNow));
-                if (nav.destination == null) {
-                    if (dockTicks % 20 == 0) HexieTrain.LOGGER.info("[dock] 虚拟车已到站，等待下一段导航");
-                } else {
-                    // 只要虚拟车拿到了新目标（新一段导航已启动）→ 立即合体，与物理车走多远无关
-                    docking = false;
-                    HexieTrain.LOGGER.info("[dock] 虚拟车已获得新目标 → 立即合体（距站 {}）", String.format("%.1f", dPhysNow));
+            // ③ 停站锁：物理车没离开就不重复判到站
+            if (dwellingStation != null) {
+                SetOutputBrake(15);
+                double dd = 0;
+                try { dd = physicalDistanceTo(st); } catch (Throwable ignored) {}
+                if (dd > 8.0) { dwellingStation = null; HexieTrain.LOGGER.info("[HexieTrain][depart] 物理车已离开 {}", st.name); }
+                return;
+            }
+
+            // ★ 方向判定（唯一来源）：速度矢量 与 导航目标 的一致性，10 tick 稳定窗口
+            try {
+                double vt   = bodySpeedAlongTrackBps();
+                double want = nav.destinationBehindTrain ? -1.0 : 1.0;
+                if (!polarityFixed) {
+                    if (Math.abs(vt) > 0.8) {
+                        if (Math.signum(vt) != Math.signum(want)) {
+                            if (--dirAgreeTicks <= -10) {
+                                boolean cur = (leftIsForward == null) ? true : leftIsForward;
+                                leftIsForward = !cur; polarityFixed = true;
+                                HexieTrain.LOGGER.info("[HexieTrain][dir] 连续逆行(vtrack={}, want={}) → 翻转极性={}", String.format("%.2f", vt), want, leftIsForward);
+                            }
+                        } else if (++dirAgreeTicks >= 10) {
+                            polarityFixed = true;
+                            HexieTrain.LOGGER.info("[HexieTrain][dir] 连续一致(vtrack={}, want={}) → 极性正确", String.format("%.2f", vt), want);
+                        }
+                    } else dirAgreeTicks = 0;
                 }
+            } catch (Throwable ignored) {}
+
+            // ③b 传动方向：驱动本方块自己的左右红石通道（自动模式的唯一动力来源）
+            double stopZone = Math.max(STOP_ZONE, Math.abs(measuredSpeedMps()) * 1.2);   // 按速度动态
+            double dLeft = Math.max(0.0, legRemaining);
+            double brakeFrac = dLeft >= stopZone ? 0.0 : 1.0 - dLeft / stopZone;   // 0→1，越近越强
+            int brakeVal = (int) Math.round(15.0 * brakeFrac);
+            if (dLeft < 1.0) brakeVal = 15;                                        // 1 格内最强刹
+            if (legRemaining <= stopZone) {
+                if (Math.abs(measuredSpeedMps()) > 0.4)
+                    setAutoDirection((float) -(nav.destinationBehindTrain ? -1.0 : 1.0));   // 反转扭矩制动
+                else
+                    setAutoDirection(0f);                                                    // 停稳后切断
+            } else {
+                setAutoDirection((float) (nav.destinationBehindTrain ? -1.0 : 1.0));
             }
 
+            // ④ 刹车
+            double targetV = legRemaining > SLOW_ZONE_BLOCKS ? Double.MAX_VALUE
+                    : Math.max(CREEP_SPEED_MPS, SLOW_ZONE_SPEED_MPS * (legRemaining / SLOW_ZONE_BLOCKS));
+            SetOutputBrake(Math.max(brakeVal, v > targetV + 0.25 ? SignalChannel.brakeStrength(legRemaining, v / 20.0, linearizeBrake) : 0));
 
-            // 前进方向：只在过一次信号机时看一眼（事件触发）
-            if (dirCheckPending) {
-                dirCheckPending = false;
+            // ⑤ 到站：四步（snap → arriveAt → 清 destination → 清 path）
+            if (legRemaining <= 0.05 && v < 0.5) {
+                snapVirtualTo(train, st);
                 try {
-                    double dNow = nav.distanceToDestination;
-                    double vNowT = Math.abs(measuredSpeedMps());
-                    if (lastDDest >= 0 && vNowT > 0.5 && dNow > lastDDest + 1.0) {
-                        leftIsForward = !(leftIsForward == null ? true : leftIsForward);
-                        HexieTrain.LOGGER.info("[HexieTrain][dir] 过信号机：距站 {} → {}（在远离）→ 交换输出侧={}",
-                                String.format("%.1f", lastDDest), String.format("%.1f", dNow), leftIsForward);
-                    } else {
-                        HexieTrain.LOGGER.info("[HexieTrain][dir] 过信号机：距站 {} → {}（在接近）→ 方向保持",
-                                String.format("%.1f", lastDDest), String.format("%.1f", dNow));
+                    var rt = train.runtime;
+                    if (rt.state != com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT)
+                        rt.state = com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT;
+                    // 条件列为空会导致 tickConditions 永不推进：补一个空列
+                    if (rt.schedule != null && rt.currentEntry >= 0 && rt.currentEntry < rt.schedule.entries.size()) {
+                        var conds = rt.schedule.entries.get(rt.currentEntry).conditions;
+                        if (conds.isEmpty()) conds.add(new java.util.ArrayList<>());
                     }
-                    lastDDest = dNow;
-                } catch (Throwable ignored) {}
+                    train.arriveAt(st); nav.destination = null;   // 唯一新增：清目标，状态机才能推进
+                } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
+                try { var f2 = nav.getClass().getDeclaredField("currentPath"); f2.setAccessible(true); ((java.util.List<?>) f2.get(nav)).clear(); } catch (Throwable ignored) {}
+                nav.destination = null;
+                dwellingStation = st;
+                HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车位置触发）", st.name);
+                legRemaining = -1;
+                lastLegDest = null;
             }
-
-            // ③b 传动方向 + ④ 刹车：目标速度曲线（照抄和谐的 BrakingCurve）
-            // v_allow = sqrt(target² + 2·a·d)   —— 当前位置允许的最高速度
-            double dLeft = Math.max(0.0, nav.distanceToDestination);   // 用 Create 自己的沿轨距离，不用我们自造的 legRemaining
-            double decel  = BRAKE_DECEL;                       // 期望减速度 m/s²
-            double vAllow = Math.sqrt(2.0 * decel * dLeft);   // 无自造余量
-
-            int brakeVal = 0;
-            if (vNow > vAllow) {
-                double over = (vNow - vAllow) / Math.max(vNow, 1.0E-3);   // 超出允许速度的比例
-                brakeVal = (int) Math.round(15.0 * Math.min(1.0, over));
-            }
-            // 1 格内不再强制满刹：交给 Create 判到站，我们只按曲线刹
-
-            float navDir = (float) (nav.destinationBehindTrain ? 1.0 : -1.0);   // 语义与直觉相反：behind=true 时要往 + 走
-            setAutoDirection(navDir);   // 未到站就一个方向，不设任何阈值区
-
-            // 到站保持（照抄和谐的 StationStopControl 判据：速度≈0 且距站 ≤10 米）
-            double dPhys = 0;
-            try { dPhys = physicalDistanceTo(st); } catch (Throwable ignored) {}
-            if (vNow <= 0.05 && train.getCurrentStation() != null) brakeVal = 15;   // 只有 Create 已把车放进站台才满刹保持
-
-            SetOutputBrake(brakeVal);
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][auto] {}", t.toString()); }
     }
 
@@ -1002,7 +932,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 拆除列车身份：解除寻路 → 离站 → 从 RAILWAYS 移除。 */
     public void dissolve() {
         if (boundTrain == null) return;
-        try { SetOutputBrake(0); setAutoDirection(0f); } catch (Throwable ignored) {}   // 注销时清掉残余输出
         if (boundTrain != null) BY_TRAIN.remove(boundTrain);
         if (level != null && !level.isClientSide) {
             Train train = Create.RAILWAYS.trains.get(boundTrain);
@@ -1111,7 +1040,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
     public void bindTrain(UUID id) {
-        anchorOnce = true;   // 新绑定：先锚定一次，之后靠速度注入让 Create 自己走
         BY_TRAIN.put(id, this);
         leftIsForward = null;   // 重新判定朝向
         boundTrain = id;
@@ -1121,6 +1049,14 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
 
+    public boolean linearizeBrake() {
+        return linearizeBrake;
+    }
+
+    public void setLinearizeBrake(boolean value) {
+        linearizeBrake = value;
+        setChanged();
+    }
 
     // ══════════════════════ 存档 ══════════════════════
 
@@ -1129,13 +1065,13 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         super.write(tag, registries, clientPacket);
         if (boundTrain != null) tag.putUUID("BoundTrain", boundTrain);
         tag.putBoolean("ManualMode", manualMode);
-        if (leftIsForward != null) tag.putBoolean("LeftIsForward", leftIsForward);   // 记住哪一侧是前进，避免 BE 重建后回到默认
         if (owner != null) tag.putUUID("Owner", owner);
         // 方块特性：玩家在 UI 里调的制动灵敏度
         if (!scheduleSlot.isEmpty()) tag.put("Schedule", sanitizedSchedule().save(registries));
         net.minecraft.nbt.ListTag names = new net.minecraft.nbt.ListTag();
         for (String s : stopNames) names.add(net.minecraft.nbt.StringTag.valueOf(s));
         tag.put("StopNames", names);
+        tag.putBoolean("LinearizeBrake", linearizeBrake);
         for (int i = 0; i < FREQ_SLOTS; i++) {
             if (!frequencies[i].isEmpty()) {
                 tag.put("Freq" + i, frequencies[i].save(registries));
@@ -1153,7 +1089,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             HexieTrain.LOGGER.info("[HexieTrain] 从存档恢复列车绑定 {}", boundTrain);
         }
         manualMode = tag.getBoolean("ManualMode");
-        if (tag.contains("LeftIsForward")) leftIsForward = tag.getBoolean("LeftIsForward");   // 恢复方向判定结果
         owner = tag.hasUUID("Owner") ? tag.getUUID("Owner") : null;
         // 方块特性：制动灵敏度（缺省 3.0 格/秒²）
 
@@ -1161,6 +1096,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         stallTicks = 0;
         lastLeadPos = null;
         lastDestination = null;
+        linearizeBrake = !tag.contains("LinearizeBrake") || tag.getBoolean("LinearizeBrake");
 
         scheduleSlot = tag.contains("Schedule")
                 ? ItemStack.parseOptional(registries, tag.getCompound("Schedule"))
@@ -1197,7 +1133,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      * 供 UI 显示与后续控制运算使用。
      */
     private void updateMeasuredSpeed() {
-        if (speedSampleAge++ % 5 != 0) return;   // 每 5 tick 采样一次，减少 SubLevel 容器查询
         if (!(level instanceof net.minecraft.server.level.ServerLevel serverLevel)) return;
         org.joml.Vector3d v = SubLevelSuspend.velocityAt(serverLevel, worldPosition);
         measuredVelocity.set(v);
