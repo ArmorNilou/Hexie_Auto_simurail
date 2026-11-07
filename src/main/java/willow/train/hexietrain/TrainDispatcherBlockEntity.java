@@ -761,7 +761,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double vNow = Math.abs(measuredSpeedMps());
             double moved = (nav.destinationBehindTrain ? -1.0 : 1.0) * vNow / 20.0;   // 用驾驶意图定符号，不用不可靠的切线投影
             legRemaining = Math.max(0.0, legRemaining - moved);
-            nav.distanceToDestination = legRemaining;
+            // 不回写 nav.distanceToDestination：那是 Create 自己的账，回写会互相污染
             double v = Math.abs(measuredSpeedMps());
 
             // ══ 进站解耦状态机 ══
@@ -791,11 +791,13 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             }
             // 过一次信号机 → 重新判定一次（distanceToSignal 被重置变大即为跨过）
             double dSigNow = nav.distanceToSignal;
-            if (lastSignalDist >= 0 && dSigNow > lastSignalDist + 1.0) {
+            if (Double.isFinite(dSigNow) && dSigNow < 1.0E6) {   // MAX_VALUE = 前方无信号机，不算"过信号机"
+                if (lastSignalDist >= 0 && lastSignalDist < 1.0E6 && dSigNow > lastSignalDist + 1.0) {
                 dirResolved = false; dirProbing = false; dirProbeCooldown = 0;
                 HexieTrain.LOGGER.info("[HexieTrain][dir] 过信号机（dSignal {} → {}）→ 重新判定方向", String.format("%.1f", lastSignalDist), String.format("%.1f", dSigNow));
             }
             lastSignalDist = dSigNow;
+            }
             try {
                 if (!dirResolved) {
                     double dNow = nav.distanceToDestination;
