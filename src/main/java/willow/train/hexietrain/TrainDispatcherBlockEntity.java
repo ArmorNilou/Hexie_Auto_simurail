@@ -246,7 +246,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     public int externalRight() { return extRight; }
 
     /** 未绑定：没有时刻表且没有物理红石输入 → 不输出任何应力/通道。 */
-    public boolean isUnbound() { return scheduleSlot.isEmpty() && extLeft == 0 && extRight == 0; }
+    public boolean isUnbound() { return scheduleSlot.isEmpty() && !manualMode && leftSignal() == 0 && rightSignal() == 0; }
     public int leftSignal() {
         return sideSignal(true);
     }
