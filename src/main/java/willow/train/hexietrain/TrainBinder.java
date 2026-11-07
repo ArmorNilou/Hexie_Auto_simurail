@@ -328,8 +328,8 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
                 PhysicsBogeyBlockEntity back  = all.get(Math.min(all.size() - 1, i * 2 + 1));
                 var fp = front.getAxle(true).getTrackPoint();
                 var bp = back.getAxle(false).getTrackPoint();
-                if (fp != null) syncPoint(level, front, car.getLeadingPoint());
-                if (bp != null) syncPoint(level, back, car.getTrailingPoint());
+                if (fp != null) syncPoint(fp, car.getLeadingPoint());
+                if (bp != null) syncPoint(bp, car.getTrailingPoint());
             }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][anchor] {}", t.toString()); }
     }
@@ -340,26 +340,25 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
      * 投影到虚拟点【自己所在的边】上，算出一个 position 写回去。
      * 这样点永远在自己的轨道上（不会脱轨），且每 tick 与物理车对齐。
      */
-    private static void syncPoint(ServerLevel level, PhysicsBogeyBlockEntity bogey, TravellingPoint dst) {
-        if (dst == null || dst.edge == null || bogey == null) return;
+    /**
+     * 学和谐：物理点提供世界位置，虚拟点只在【自己所在的边】上被重新定位。
+     * Create 的 position 语义固定为：t = position / edge.getLength()（相对 edge.node1），
+     * 与 TravellingPoint 自己的 node1 顺序无关 —— 所以这里只写 bestT * length。
+     */
+    private static void syncPoint(TravellingPoint src, TravellingPoint dst) {
+        if (src == null || dst == null || dst.edge == null || src.edge == null) return;
         try {
-            net.minecraft.world.phys.Vec3 world = willow.train.hexietrain.SubLevelSuspend
-                    .worldCenter(level, bogey.getBlockPos());
-            if (world == null) return;
+            net.minecraft.world.phys.Vec3 world = src.getPosition(null);   // 物理点的世界位置
             com.simibubi.create.content.trains.graph.TrackEdge edge = dst.edge;
             int samples = 64;
-            double bestT = -1.0;
-            double bestD = Double.MAX_VALUE;
+            double bestT = -1.0, bestD = Double.MAX_VALUE;
             for (int i = 0; i <= samples; i++) {
                 double t = i / (double) samples;
-                net.minecraft.world.phys.Vec3 p = edge.getPosition(null, t);
-                double d = p.distanceToSqr(world);
+                double d = edge.getPosition(null, t).distanceToSqr(world);
                 if (d < bestD) { bestD = d; bestT = t; }
             }
             if (bestT < 0) return;
-            double len = edge.getLength();
-            boolean sameOrder = dst.node1 == edge.node1;
-            dst.position = sameOrder ? bestT * len : (1.0 - bestT) * len;
+            dst.position = bestT * edge.getLength();
         } catch (Throwable ignored) {}
     }
 
