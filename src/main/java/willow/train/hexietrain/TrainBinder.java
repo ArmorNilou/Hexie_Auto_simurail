@@ -395,15 +395,17 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
                         || dst.edge.node2 == src.edge.node1 || dst.edge.node2 == src.edge.node2;
                 if (!connected) return;                 // 不相邻的边：拒绝，保持当前点不动
             }
-            dst.node1 = src.node1;
-            dst.node2 = src.node2;
+            // 统一到"边自身方向"：position 一律相对 edge.node1 计量，避免前后两点方向相反导致车体乱转
+            double len = src.edge.getLength();
+            boolean flipped = (src.node1 != src.edge.node1);
+            dst.node1 = src.edge.node1;
+            dst.node2 = src.edge.node2;
             dst.edge = src.edge;
-            dst.position = src.position;
+            dst.position = flipped ? Math.max(0.0, len - src.position) : src.position;
             dst.upsideDown = src.upsideDown;
             dst.blocked = src.blocked;
         } catch (Throwable ignored) {}
     }
-
     private static TravellingPoint copyPoint(TravellingPoint src) {
         TrackNode n1 = src.node1;
         TrackNode n2 = src.node2;
