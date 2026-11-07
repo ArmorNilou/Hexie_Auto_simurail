@@ -337,12 +337,35 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
                         if (dBp < dFp) { var tmp = fp; fp = bp; bp = tmp; }   // 后轴的点更靠车头 → 交换
                     } catch (Throwable ignored) {}
                 }
-                if (fp != null) copyInto(fp, car.getLeadingPoint());   // 恢复：能吸附（抖动另修）
-                if (bp != null) copyInto(bp, car.getTrailingPoint());
+                if (fp != null) syncPoint(fp, car.getLeadingPoint());
+                if (bp != null) syncPoint(bp, car.getTrailingPoint());
             }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][anchor] {}", t.toString()); }
     }
 
+
+    /**
+     * 只搬"位置"，绝不搬 edge —— 物理转向架的 getTrackPoint() 取的是最近的边，
+     * 环线两侧轨道靠近时会把虚拟车搬到对面。这里改为：保留虚拟点自己的边，
+     * 把物理点的世界位置投影到这条边上，得到 position（Create 语义：t = position / edge.getLength()）。
+     */
+    private static void syncPoint(TravellingPoint src, TravellingPoint dst) {
+        if (src == null || dst == null || dst.edge == null || src.edge == null) return;
+        try {
+            net.minecraft.world.phys.Vec3 world = src.getPosition(null);
+            com.simibubi.create.content.trains.graph.TrackEdge edge = dst.edge;
+            int samples = 64;
+            double bestT = -1.0, bestD = Double.MAX_VALUE;
+            for (int i = 0; i <= samples; i++) {
+                double t = i / (double) samples;
+                double d = edge.getPosition(null, t).distanceToSqr(world);
+                if (d < bestD) { bestD = d; bestT = t; }
+            }
+            if (bestT < 0) return;
+            if (bestD > 9.0) return;                      // 物理车明显不在这条边上 → 不动，等 Create travel 换边
+            dst.position = bestT * edge.getLength();
+        } catch (Throwable ignored) {}
+    }
 
     private static void copyInto(TravellingPoint src, TravellingPoint dst) {
         if (dst == null) return;
