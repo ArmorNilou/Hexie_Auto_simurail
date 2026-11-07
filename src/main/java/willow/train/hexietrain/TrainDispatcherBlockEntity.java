@@ -131,6 +131,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 速度传感器：上一 tick 测得的世界速度矢量（m/s，含旋转贡献）。 */
     private final org.joml.Vector3d measuredVelocity = new org.joml.Vector3d();
+    private int speedSampleAge = 0;
 
     /** 速度传感器：速度大小（m/s），低于 0.05 归零（与航空学一致）。 */
     private double measuredSpeedMps = 0;
@@ -1116,6 +1117,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
      * 供 UI 显示与后续控制运算使用。
      */
     private void updateMeasuredSpeed() {
+        if (speedSampleAge++ % 5 != 0) return;   // 每 5 tick 采样一次，减少 SubLevel 容器查询
         if (!(level instanceof net.minecraft.server.level.ServerLevel serverLevel)) return;
         org.joml.Vector3d v = SubLevelSuspend.velocityAt(serverLevel, worldPosition);
         measuredVelocity.set(v);
