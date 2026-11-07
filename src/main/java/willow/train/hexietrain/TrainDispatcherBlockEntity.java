@@ -580,6 +580,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                     // 只改标志位，绝不调用 setManualMode()——它会 dissolve 列车并把我们的通道清零（红石一动就归零的根因）
                     if (!manualMode) { manualMode = true; setChanged(); sendData(); }
                     SetOutputBrake(0);   // 红石驱动时释放刹车，扭矩由红石经 blockstate 给
+                // 手操：强制把虚拟车吸附到物理车（不参与导航，但位置必须跟着走）
+                docking = false;
+                try { if (level instanceof ServerLevel slM) TrainBinder.reanchor(train, slM, worldPosition); } catch (Throwable ignored) {}
                 setDispatcherState(DispatcherState.RUNNING);   // 手操且正在被红石驱动
                 double dir = left > 0 ? 1.0 : -1.0;
                 double mag = Math.max(left, right) / 15.0;
@@ -589,7 +592,10 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 return;
             }
             // 手动模式：blockstate 由 Block.neighborChanged 独占，我们绝不写（否则会抹掉红石状态）
-            if (manualMode) { setDispatcherState(DispatcherState.IDLE); SetOutputBrake(0); return; }   // 手操交由红石，不再强制满刹
+            if (manualMode) { setDispatcherState(DispatcherState.IDLE); SetOutputBrake(0);
+                docking = false;
+                try { if (level instanceof ServerLevel slM2) TrainBinder.reanchor(train, slM2, worldPosition); } catch (Throwable ignored) {}
+                return; }
 
             driveToStation(train);
             // TP 锚定：把虚拟车厢的点直接摆到物理转向架位置（每 tick，绝对覆盖）
