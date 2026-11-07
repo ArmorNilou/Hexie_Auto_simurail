@@ -742,14 +742,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             nav.distanceToDestination = legRemaining;
             double v = Math.abs(measuredSpeedMps());
 
-            // ③ 停站锁：物理车没离开就不重复判到站
-            if (dwellingStation != null) {
-                SetOutputBrake(15);
-                double dd = 0;
-                try { dd = physicalDistanceTo(st); } catch (Throwable ignored) {}
-                if (dd > 8.0) { dwellingStation = null; HexieTrain.LOGGER.info("[HexieTrain][depart] 物理车已离开 {}", st.name); }
-                return;
-            }
 
             // ★ 前进方向：虚拟车每启动一次导航，判定一次（目标变化即为启动）
             if (nav.destination != lastNavDest) {
@@ -804,17 +796,16 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 double over = (vNow - vAllow) / Math.max(vNow, 1.0E-3);   // 超出允许速度的比例
                 brakeVal = (int) Math.round(15.0 * Math.min(1.0, over));
             }
-            if (dLeft < 1.0) brakeVal = 15;                    // 1 格内最强刹
+            // 1 格内不再强制满刹：交给 Create 判到站，我们只按曲线刹
 
             float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
             if (dLeft <= 3.0 && vNow > 0.4) setAutoDirection(-navDir);   // 近距离滑行：反转顶住
-            else if (dLeft < 1.0 && vNow <= 0.4) setAutoDirection(0f);   // 停稳切断
-            else setAutoDirection(navDir);
+            else setAutoDirection(navDir);   // 未到站就继续给前进扭矩（到站由 Create 判定）
 
             // 到站保持（照抄和谐的 StationStopControl 判据：速度≈0 且距站 ≤10 米）
             double dPhys = 0;
             try { dPhys = physicalDistanceTo(st); } catch (Throwable ignored) {}
-            if (vNow <= 0.05 && dPhys <= 10.0) brakeVal = 15;  // 已停稳在站内：满刹保持
+            if (vNow <= 0.05 && train.getCurrentStation() != null) brakeVal = 15;   // 只有 Create 已把车放进站台才满刹保持
 
             SetOutputBrake(brakeVal);
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][auto] {}", t.toString()); }
