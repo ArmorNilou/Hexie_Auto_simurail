@@ -718,16 +718,25 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             if (train.derailed || train.invalid || !isPrimaryDispatcher()) return;
 
             var nav = train.navigation;
-            if (nav == null || nav.destination == null) return;
+            if (nav == null || nav.destination == null) {
+                if (docking) { SetOutputBrake(15); setAutoDirection(0f); }   // 解耦且虚拟车已到站：物理车停住候车
+                return;
+            }
             GlobalStation st = nav.destination;
 
-            // 到站由 Create 判定：它把车放进站台（currentStation）或状态离开 IN_TRANSIT，就满刹保持
+            // 到站保持：只有【物理车也到了站台】才满刹锁死；否则继续把车开过去
             try {
-                if (train.getCurrentStation() != null
-                        || train.runtime.state != com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT) {
-                    SetOutputBrake(15);
-                    setAutoDirection(0f);
-                    return;
+                boolean arrived = train.getCurrentStation() != null
+                        || train.runtime.state != com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT;
+                if (arrived) {
+                    double dPh = 0;
+                    try { dPh = physicalDistanceTo(st); } catch (Throwable ignored) {}
+                    if (dPh <= 3.0) {                 // 物理车确实停在站台旁
+                        SetOutputBrake(15);
+                        setAutoDirection(0f);
+                        return;
+                    }
+                    // 虚拟车到了但物理车还没到 → 不锁，继续走下面的牵引/刹车逻辑
                 }
             } catch (Throwable ignored) {}
 
