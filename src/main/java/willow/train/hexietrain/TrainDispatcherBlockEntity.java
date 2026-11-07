@@ -790,7 +790,9 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
             // 需求 8：解耦期间不干预 Create —— 让它自己驱动虚拟车进站（否则 targetSpeed=0 会把它按住不动）
             if (docking) {
                 // 解耦期间：虚拟车交给 Create（我们不碰），物理车由我们独立刹到站台 —— 两条线程互不干扰
-                double dPhys2 = train.navigation.distanceToDestination;   // 沿轨距离（此前漏赋值，恒为 0 → 刹车与方向全部失真）
+                // 解耦期间：物理距离只来自物理车与站台，虚拟车的任何数值都不参与（否则就是"虚拟车绑架物理车"）
+                double dPhys2 = 0;
+                try { dPhys2 = physicalDistanceTo(train.navigation.destination); } catch (Throwable ignored) {}
                 double vNow2 = Math.abs(measuredSpeedMps());
                 double targetV2 = dPhys2 > SLOW_ZONE_BLOCKS ? Double.MAX_VALUE
                         : Math.max(CREEP_SPEED_MPS, SLOW_ZONE_SPEED_MPS * (dPhys2 / SLOW_ZONE_BLOCKS));
