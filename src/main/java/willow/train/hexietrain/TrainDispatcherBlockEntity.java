@@ -128,6 +128,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private float autoDirection = 0f;
     /** 方块的"左"是否就是虚拟列车定义的前进方向（绑定/放置时一次判定，之后不变）。 */
     private Boolean leftIsForward = null;
+    private boolean certifyPending = false;   // 需要做一次"导航方向 vs 速度矢量"一致性认证
     private boolean polarityFixed = false;   // 方向极性是否已锁定
     private int dirAgreeTicks = 0;          // 连续一致/相反的 tick 计数
 
@@ -385,6 +386,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 切换自动驾驶 / 玩家操控。切回自动时会恢复寻路。 */
     /** 玩家在 UI 上强制切回自动：清除红石快照，避免"下一 tick 又被拉回手操"。 */
     public void forceAuto() {
+        certifyPending = true;   // 触发点②：切回自动驾驶
         extLeft = 0;
         extRight = 0;
         manualMode = false;
@@ -619,6 +621,32 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
     /** 输出极性：只在 leftIsForward 被外部判定后使用；不再读转向架（残留代码已移除）。 */
+    /**
+     * 前进认证：比对 Create 的导航路径方向 与 速度矢量方向，一致则确认"前进"，不一致则交换输出侧。
+     * 只在三个时机调用：绑定、切回自动驾驶、过一个信号机。认证结果此后保持不变。
+     */
+    private void certifyForward(Train train) {
+        try {
+            var nav = train.navigation;
+            if (nav == null || nav.destination == null) return;
+            double vt   = bodySpeedAlongTrackBps();
+            double want = nav.destinationBehindTrain ? -1.0 : 1.0;   // Create 找到的路径方向
+            if (Math.abs(vt) < 0.8) {
+                HexieTrain.LOGGER.info("[HexieTrain][dir] 认证暂缓：速度不足（vt={}）", String.format("%.2f", vt));
+                return;                                                   // 速度不足：保留 pending，下次时机再试
+            }
+            if (Math.signum(vt) != Math.signum(want)) {
+                leftIsForward = !(leftIsForward == null ? true : leftIsForward);
+                HexieTrain.LOGGER.info("[HexieTrain][dir] 认证：速度矢量({}) 与导航({}) 不一致 → 前进侧翻转为={}",
+                        String.format("%.2f", vt), want, leftIsForward);
+            } else {
+                HexieTrain.LOGGER.info("[HexieTrain][dir] 认证：速度矢量({}) 与导航({}) 一致 → 前进侧确认={}",
+                        String.format("%.2f", vt), want, leftPolarity());
+            }
+            certifyPending = false;
+        } catch (Throwable ignored) {}
+    }
+
     private boolean leftPolarity() {
         return leftIsForward == null ? true : leftIsForward;
     }
@@ -742,7 +770,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 lastLegDest = st;
                 lastLegEntry = train.runtime.currentEntry;
                 HexieTrain.LOGGER.info("[HexieTrain][leg] → {} 沿轨长度={}", st.name, String.format("%.1f", legRemaining));
-                polarityFixed = false; dirAgreeTicks = 0;   // 新段重新判定方向
+                // 认证结果跨段保持，只有"绑定/切回自动/过信号机"才重测
             }
 
             // ② 物理位移核减（带符号）
@@ -765,22 +793,16 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 HexieTrain.LOGGER.info("[HexieTrain][depart] 物理车不在站台旁（{}）→ 解除停站锁，继续进站", String.format("%.1f", dd));
             }
 
-            // 需求 1/2：前进方向 = 速度矢量 与 导航路径方向 是否一致；只在"过一个信号机"时判一次
+            // 前进认证的三个触发点之一：过一个信号机（绑定、切回自动 在各自入口置位）
             try {
                 double dSigNow = nav.distanceToSignal;
-                if (Double.isFinite(dSigNow) && dSigNow < 1.0E6) {                 // MAX_VALUE = 前方无信号机
-                    boolean crossed = lastSignalDist >= 0 && lastSignalDist < 1.0E6 && dSigNow > lastSignalDist + 1.0;
-                    lastSignalDist = dSigNow;
-                    if (crossed) {
-                        double vt   = bodySpeedAlongTrackBps();
-                        double want = nav.destinationBehindTrain ? -1.0 : 1.0;
-                        if (Math.abs(vt) > 0.8 && Math.signum(vt) != Math.signum(want)) {
-                            leftIsForward = !(leftIsForward == null ? true : leftIsForward);
-                            HexieTrain.LOGGER.info("[HexieTrain][dir] 过信号机：速度矢量({}) 与导航路径({}) 不一致 → 交换输出侧={}",
-                                    String.format("%.2f", vt), want, leftIsForward);
-                        }
+                if (Double.isFinite(dSigNow) && dSigNow < 1.0E6) {          // MAX_VALUE = 前方无信号机
+                    if (lastSignalDist >= 0 && lastSignalDist < 1.0E6 && dSigNow > lastSignalDist + 1.0) {
+                        certifyPending = true;
                     }
+                    lastSignalDist = dSigNow;
                 }
+                if (certifyPending) certifyForward(train);                  // 只在被触发的这一次做认证
             } catch (Throwable ignored) {}
 
             // ③b 传动方向：驱动本方块自己的左右红石通道（自动模式的唯一动力来源）
@@ -1062,6 +1084,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
     public void bindTrain(UUID id) {
+        certifyPending = true;   // 触发点①：绑定
         BY_TRAIN.put(id, this);
         leftIsForward = null;   // 重新判定朝向
         boundTrain = id;
