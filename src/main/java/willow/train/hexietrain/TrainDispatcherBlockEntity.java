@@ -547,7 +547,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 }
             } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][diag] {}", t.toString()); }
 
-            if (!isOwner()) return;   // 非认领者不得驱动
+            // 去掉了 isOwner() 闸门（静态表残留旧实例会让本方块永远被判"非 owner"，导致红石读不到、无输出）
+            // 主调度器判定统一由 driveToStation 里的 isPrimaryDispatcher() 负责
             int left = leftSignal(), right = rightSignal();   // 直读侧面红石（无线链路不一定触发 neighborChanged）
             updateExternalInput(left, right);                  // 同步快照，仅供 UI / 状态文件
             boolean redstonePresent = left > 0 || right > 0;
