@@ -830,9 +830,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
             // ③b 传动方向 + ④ 刹车：目标速度曲线（照抄和谐的 BrakingCurve）
             // v_allow = sqrt(target² + 2·a·d)   —— 当前位置允许的最高速度
-            double dLeft = Math.max(0.0, legRemaining);
+            double dLeft = Math.max(0.0, nav.distanceToDestination);   // 用 Create 自己的沿轨距离，不用我们自造的 legRemaining
             double decel  = BRAKE_DECEL;                       // 期望减速度 m/s²
-            double vAllow = Math.sqrt(2.0 * decel * Math.max(0.0, dLeft - 1.5));   // 留 1.5m 余量，最后几米也要刹
+            double vAllow = Math.sqrt(2.0 * decel * dLeft);   // 无自造余量
 
             int brakeVal = 0;
             if (vNow > vAllow) {
@@ -842,8 +842,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             // 1 格内不再强制满刹：交给 Create 判到站，我们只按曲线刹
 
             float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
-            if (dLeft <= 3.0) setAutoDirection(0f);   // 最后 3 米：切断扭矩（绝不反转，反转会把车倒推出去）
-            else setAutoDirection(navDir);   // 未到站就继续给前进扭矩（到站由 Create 判定）
+            setAutoDirection(navDir);   // 未到站就一个方向，不设任何阈值区
 
             // 到站保持（照抄和谐的 StationStopControl 判据：速度≈0 且距站 ≤10 米）
             double dPhys = 0;
