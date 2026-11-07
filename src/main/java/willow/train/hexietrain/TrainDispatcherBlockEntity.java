@@ -545,7 +545,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
             // 玩家给红石 → 单向切手动（要恢复请点 UI 或重设列车）
             if (redstonePresent) {
-                if (!manualMode) setManualMode(true);   // 内部会调 syncTrainPresence：注销虚拟列车、通道归零
+                    // 只改标志位，绝不调用 setManualMode()——它会 dissolve 列车并把我们的通道清零（红石一动就归零的根因）
+                    if (!manualMode) { manualMode = true; setChanged(); sendData(); }
+                    SetOutputBrake(0);   // 红石驱动时释放刹车，扭矩由红石经 blockstate 给
                 setDispatcherState(DispatcherState.RUNNING);   // 手操且正在被红石驱动
                 double dir = left > 0 ? 1.0 : -1.0;
                 double mag = Math.max(left, right) / 15.0;
