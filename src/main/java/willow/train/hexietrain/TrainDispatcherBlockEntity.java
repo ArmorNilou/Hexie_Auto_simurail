@@ -396,6 +396,13 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 速度注入开关：进站解耦期间不注入，让 Create 自己驱动虚拟车。 */
     public boolean shouldInjectSpeed() { return !docking; }
     public double physicalSpeedPerTick() { try { return bodySpeedAlongTrackBps() / 20.0; } catch (Throwable t) { return 0.0; } }
+
+    /** 由 mixin 在"跨过边点/信号机"时回调：只在这里允许重新判定方向。 */
+    public void onEdgePointCrossed() {
+        dirResolved = false;
+        dirProbing = false;
+        dirProbeCooldown = 0;
+    }
     public boolean manualMode() {
         return manualMode;
     }
@@ -788,15 +795,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             if (nav.destination != lastNavDest) {
                 lastNavDest = nav.destination;      // 虚拟车启动一次导航
                 dirResolved = false; dirProbing = false; dirProbeCooldown = 0;
-            }
-            // 过一次信号机 → 重新判定一次（distanceToSignal 被重置变大即为跨过）
-            double dSigNow = nav.distanceToSignal;
-            if (Double.isFinite(dSigNow) && dSigNow < 1.0E6) {   // MAX_VALUE = 前方无信号机，不算"过信号机"
-                if (lastSignalDist >= 0 && lastSignalDist < 1.0E6 && dSigNow > lastSignalDist + 1.0) {
-                dirResolved = false; dirProbing = false; dirProbeCooldown = 0;
-                HexieTrain.LOGGER.info("[HexieTrain][dir] 过信号机（dSignal {} → {}）→ 重新判定方向", String.format("%.1f", lastSignalDist), String.format("%.1f", dSigNow));
-            }
-            lastSignalDist = dSigNow;
             }
             try {
                 if (!dirResolved) {
