@@ -97,11 +97,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 诊断日志计时。 */
 
-    /** 简化自动驾驶的巡航速度（格/tick）。 */
-    private static final double AUTO_SPEED = 0.15;
 
-    /** 制动区内的最大接近速度（格/tick）。 */
-    private static final double MAX_APPROACH_SPEED = 0.35;
 
     /** 进站：5 格内限速 3 m/s。 */
     private static final double SLOW_ZONE_BLOCKS = 5.0;
@@ -111,13 +107,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private static final double CREEP_SPEED_MPS = 0.3;
     private static final double STOP_ZONE = 3.0;   // 格：进入此距离切断扭矩
 
-    /** 期望制动减速度（m/s²），用于估算"还要滑多远"。先给常量，实测后调。 */
-    private static final double EXPECTED_BRAKE_DECEL = 1.0;
 
-    /** 距车站多少格内允许用反向传动提供反向推力。 */
-    private static final double REVERSE_ZONE_BLOCKS = 20.0;
-    /** 判定"刹不住"的安全余量（格）。 */
-    private static final double STOP_MARGIN_BLOCKS = 2.0;
 
     /** 本次行程是否还想到站：到站后置 false，离站足够远再置回 true。 */
     private int arrivedEntry = -1;
@@ -536,12 +526,13 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][diag] {}", t.toString()); }
 
             if (!isOwner()) return;   // 非认领者不得驱动
-            int left = extLeft, right = extRight;   // 只用物理红石（neighborChanged 维护），无线回环不进判定
+            int left = leftSignal(), right = rightSignal();   // 直读侧面红石（无线链路不一定触发 neighborChanged）
+            updateExternalInput(left, right);                  // 同步快照，仅供 UI / 状态文件
             boolean redstonePresent = left > 0 || right > 0;
 
             // 玩家给红石 → 单向切手动（要恢复请点 UI 或重设列车）
             if (redstonePresent) {
-                if (!manualMode) setManualMode(true);   // 内部会调 syncTrainPresence：注销虚拟列车、通道归零
+                if (!manualMode) { manualMode = true; setChanged(); sendData(); }   // 只改标志位，不触发注销/清通道
                 setDispatcherState(DispatcherState.RUNNING);   // 手操且正在被红石驱动
                 double dir = left > 0 ? 1.0 : -1.0;
                 double mag = Math.max(left, right) / 15.0;
