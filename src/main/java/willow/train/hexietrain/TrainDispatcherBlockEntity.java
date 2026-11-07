@@ -539,7 +539,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][diag] {}", t.toString()); }
 
             if (!isOwner()) return;   // 非认领者不得驱动
-            int left = extLeft, right = extRight;   // 只用物理红石（neighborChanged 维护），无线回环不进判定
+            int left = leftSignal(), right = rightSignal();   // 直接读侧面红石（无线链路不触发 neighborChanged）
+            updateExternalInput(left, right);                  // 同步快照，供 UI 与状态文件使用
             boolean redstonePresent = left > 0 || right > 0;
 
             // 玩家给红石 → 单向切手动（要恢复请点 UI 或重设列车）
