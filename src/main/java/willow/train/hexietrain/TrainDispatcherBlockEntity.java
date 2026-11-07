@@ -144,6 +144,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private double lastSignalDist = -1;    // 上一次的"到下一信号机的距离"，用来判断是否过了一个信号机
     /** 进站解耦：true 时虚拟车自己走、物理车自理，二者暂不同步。 */
     private boolean docking = false;
+    private GlobalStation lastStation = null;   // 上一个导航目标站（目标清空后仍可用于量距离）
     private int dockTicks = 0;
     private double lastDDest = -1;        // 上一次的到站距离，用来判断"是否在靠近站台"
     private boolean dirResolved = false;     // 本段方向是否已判定（判完不再计算）
@@ -721,33 +722,25 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
             var nav = train.navigation;
             if (nav == null || nav.destination == null) {
-                if (docking) { SetOutputBrake(15); setAutoDirection(0f); }   // 解耦且虚拟车已到站：物理车停住候车
-                return;
-            }
-            GlobalStation st = nav.destination;
-
-            // 到站保持：虚拟车已到站 → 物理车必须朝站台收敛并停住，绝不按空的导航目标乱跑
-            try {
-                boolean arrived = train.getCurrentStation() != null
-                        || train.runtime.state != com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT;
-                if (arrived) {
-                    double dPh = 0;
-                    try { dPh = physicalDistanceTo(st); } catch (Throwable ignored) {}
-                    if (dPh <= 3.0) {                        // 已在站台：满刹停住
+                // 到站后目标被清空：用上一个目标站判断物理车是否真的到了站台
+                if (lastStation != null) {
+                    double dPh2 = 0;
+                    try { dPh2 = physicalDistanceTo(lastStation); } catch (Throwable ignored) {}
+                    if (dPh2 > 3.0) {
+                        double vNow2 = Math.abs(measuredSpeedMps());
+                        double vAllow2 = Math.sqrt(2.0 * BRAKE_DECEL * Math.max(0.0, dPh2 - 1.5));
+                        SetOutputBrake(vNow2 > vAllow2 ? (int) Math.round(15.0 * Math.min(1.0, (vNow2 - vAllow2) / Math.max(vNow2, 1.0E-3))) : 0);
+                        if (Math.abs(autoDirection) > 1.0E-4f) setAutoDirection(autoDirection);   // 沿用方向蹭到站台
+                    } else {
                         SetOutputBrake(15);
                         setAutoDirection(0f);
-                        return;
                     }
-                    // 还没到站台：按"到站台的距离"刹车，方向沿用上一 tick（不重新按导航算）
-                    double vNowP = Math.abs(measuredSpeedMps());
-                    double vAllowP = Math.sqrt(2.0 * BRAKE_DECEL * Math.max(0.0, dPh - 1.5));
-                    int brP = vNowP > vAllowP
-                            ? (int) Math.round(15.0 * Math.min(1.0, (vNowP - vAllowP) / Math.max(vNowP, 1.0E-3))) : 0;
-                    SetOutputBrake(brP);
-                    if (Math.abs(autoDirection) > 1.0E-4f) setAutoDirection(autoDirection);   // 保持原方向蹭到站台
                     return;
                 }
-            } catch (Throwable ignored) {}
+            }
+
+            GlobalStation st = nav.destination;
+            lastStation = st;                      // 记住目标站：目标清空后仍可用它量物理距离
 
             // ① 开始新段：记录沿轨长度
             if (pendingLeg >= 0 || st != lastLegDest || train.runtime.currentEntry != lastLegEntry || legRemaining < 0) {
