@@ -142,6 +142,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private Boolean leftIsForward = null;
     private Object lastNavDest = null;      // 上一次的导航目标；变化 = 虚拟车重新启动导航
     private double lastSignalDist = -1;    // 上一次的"到下一信号机的距离"，用来判断是否过了一个信号机
+    /** 进站解耦：true 时虚拟车自己走、物理车自理，二者暂不同步。 */
+    private boolean docking = false;
+    private int dockTicks = 0;
     private double lastDDest = -1;        // 上一次的到站距离，用来判断"是否在靠近站台"
     private boolean dirResolved = false;     // 本段方向是否已判定（判完不再计算）
     private boolean dirProbing = false;      // 是否正在做 1tick 传动探针
@@ -389,6 +392,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     // ══════════════════════ 驾驶模式 ══════════════════════
 
     /** 物理车沿轨位移（格/tick，带符号），供速度注入 mixin 使用。 */
+    /** 速度注入开关：进站解耦期间不注入，让 Create 自己驱动虚拟车。 */
+    public boolean shouldInjectSpeed() { return !docking; }
     public double physicalSpeedPerTick() { try { return bodySpeedAlongTrackBps() / 20.0; } catch (Throwable t) { return 0.0; } }
     public boolean manualMode() {
         return manualMode;
@@ -562,7 +567,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
             driveToStation(train);
             // TP 锚定：把虚拟车厢的点直接摆到物理转向架位置（每 tick，绝对覆盖）
-            if (level instanceof ServerLevel slA) TrainBinder.reanchor(train, slA, worldPosition);
+            if (!docking && level instanceof ServerLevel slA) TrainBinder.reanchor(train, slA, worldPosition);   // 解耦期间不锚定
             // 四态赋值：待命 / 行驶中 / 滑车 / 急刹
             try {
                 if (train.navigation.destination == null) {
@@ -742,6 +747,24 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             legRemaining = Math.max(0.0, legRemaining - moved);
             nav.distanceToDestination = legRemaining;
             double v = Math.abs(measuredSpeedMps());
+
+            // ══ 进站解耦状态机 ══
+            double dPhysNow = 0;
+            try { dPhysNow = physicalDistanceTo(st); } catch (Throwable ignored) {}
+            if (manualMode || scheduleSlot.isEmpty()) {
+                if (docking) { docking = false; HexieTrain.LOGGER.info("[dock] 手操/取表 → 取消解耦，虚拟车归位"); }
+            } else if (!docking && nav.destination != null && dPhysNow <= 12.0) {
+                docking = true; dockTicks = 0;
+                HexieTrain.LOGGER.info("[dock] 进站解耦开始：物理车自行停车，虚拟车独立进站（距站 {}）", String.format("%.1f", dPhysNow));
+            } else if (docking) {
+                dockTicks++;
+                if (nav.destination == null) {
+                    if (dockTicks % 20 == 0) HexieTrain.LOGGER.info("[dock] 虚拟车已到站，等待下一段导航");
+                } else if (dPhysNow > 30.0) {
+                    docking = false;
+                    HexieTrain.LOGGER.info("[dock] 下一段已开始（距站 {}）→ 重新合体", String.format("%.1f", dPhysNow));
+                }
+            }
 
 
             // ★ 前进方向：虚拟车每启动一次导航，判定一次（目标变化即为启动）

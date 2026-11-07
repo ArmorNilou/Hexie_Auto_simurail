@@ -26,7 +26,7 @@ public abstract class TrainSpeedInjectMixin {
         try {
             Train self = (Train) (Object) this;
             TrainDispatcherBlockEntity be = TrainDispatcherBlockEntity.BY_TRAIN.get(self.id);
-            if (be == null) return;
+            if (be == null || !be.shouldInjectSpeed()) return;   // 进站解耦期间不注入，虚拟车自行驱动
             double v = be.physicalSpeedPerTick();      // 格/tick，带符号
             if (Math.abs(v) < 1.0E-4) { self.speed = 0; return; }
             self.speed = v;
