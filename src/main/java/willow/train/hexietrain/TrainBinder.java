@@ -382,14 +382,26 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
         } catch (Throwable ignored) {}
     }
 
+    /**
+     * 绝对写入，但先做"边一致性"校验：只允许写到自己所在的边、或与之相连的边。
+     * 目的：物理转向架的 getTrackPoint() 取的是"最近边"，环线两侧靠近时会抓到对面的边，
+     * 直接写入会让虚拟车跳到不相邻的轨道上（表现为在轨道外乱窜）。
+     */
     private static void copyInto(TravellingPoint src, TravellingPoint dst) {
-        if (dst == null) return;
-        dst.node1 = src.node1;
-        dst.node2 = src.node2;
-        dst.edge = src.edge;
-        dst.position = src.position;
-        dst.upsideDown = src.upsideDown;
-        dst.blocked = src.blocked;
+        if (src == null || dst == null) return;
+        try {
+            if (dst.edge != null && src.edge != null && src.edge != dst.edge) {
+                boolean connected = dst.edge.node1 == src.edge.node1 || dst.edge.node1 == src.edge.node2
+                        || dst.edge.node2 == src.edge.node1 || dst.edge.node2 == src.edge.node2;
+                if (!connected) return;                 // 不相邻的边：拒绝，保持当前点不动
+            }
+            dst.node1 = src.node1;
+            dst.node2 = src.node2;
+            dst.edge = src.edge;
+            dst.position = src.position;
+            dst.upsideDown = src.upsideDown;
+            dst.blocked = src.blocked;
+        } catch (Throwable ignored) {}
     }
 
     private static TravellingPoint copyPoint(TravellingPoint src) {
