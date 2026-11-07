@@ -328,39 +328,12 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
                 PhysicsBogeyBlockEntity back  = all.get(Math.min(all.size() - 1, i * 2 + 1));
                 var fp = front.getAxle(true).getTrackPoint();
                 var bp = back.getAxle(false).getTrackPoint();
-                if (fp != null) syncPoint(fp, car.getLeadingPoint());
-                if (bp != null) syncPoint(bp, car.getTrailingPoint());
+                if (fp != null) copyInto(fp, car.getLeadingPoint());   // 恢复：能吸附（抖动另修）
+                if (bp != null) copyInto(bp, car.getTrailingPoint());
             }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][anchor] {}", t.toString()); }
     }
 
-    /** 绝对写入：node1/node2/edge/position 全量覆盖（同 CRH-HeXie 的 copy）。 */
-    /**
-     * 学和谐：不搬物理点的 edge/node 顺序，只把物理转向架的世界位置
-     * 投影到虚拟点【自己所在的边】上，算出一个 position 写回去。
-     * 这样点永远在自己的轨道上（不会脱轨），且每 tick 与物理车对齐。
-     */
-    /**
-     * 学和谐：物理点提供世界位置，虚拟点只在【自己所在的边】上被重新定位。
-     * Create 的 position 语义固定为：t = position / edge.getLength()（相对 edge.node1），
-     * 与 TravellingPoint 自己的 node1 顺序无关 —— 所以这里只写 bestT * length。
-     */
-    private static void syncPoint(TravellingPoint src, TravellingPoint dst) {
-        if (src == null || dst == null || dst.edge == null || src.edge == null) return;
-        try {
-            net.minecraft.world.phys.Vec3 world = src.getPosition(null);   // 物理点的世界位置
-            com.simibubi.create.content.trains.graph.TrackEdge edge = dst.edge;
-            int samples = 64;
-            double bestT = -1.0, bestD = Double.MAX_VALUE;
-            for (int i = 0; i <= samples; i++) {
-                double t = i / (double) samples;
-                double d = edge.getPosition(null, t).distanceToSqr(world);
-                if (d < bestD) { bestD = d; bestT = t; }
-            }
-            if (bestT < 0) return;
-            dst.position = bestT * edge.getLength();
-        } catch (Throwable ignored) {}
-    }
 
     private static void copyInto(TravellingPoint src, TravellingPoint dst) {
         if (dst == null) return;
