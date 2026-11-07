@@ -750,6 +750,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     private void driveToStation(Train train) {
         try {
+            // 需求 8：解耦期间不干预 Create —— 让它自己驱动虚拟车进站（否则 targetSpeed=0 会把它按住不动）
+            if (docking) return;
             // 速度由 mixin 每 tick 注入物理位移，不再冻结
             train.targetSpeed = 0;
             if (train.derailed || train.invalid || !isPrimaryDispatcher()) return;
@@ -1210,7 +1212,10 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             // 用速度传感器读数（姿态差分），而不是刚体质心线速度：
             // 后者不含旋转贡献，过弯时会偏小。
             var v = measuredVelocity();
-            return v.x() * dir.x + v.y() * dir.y + v.z() * dir.z;
+            // 符号必须按【虚拟点自己的 node1→node2】取：copyInto 后它与 edge 自身顺序可能相反
+            boolean sameOrder = (lp.node1 == lp.edge.node1);
+            double dirSign = sameOrder ? 1.0 : -1.0;
+            return dirSign * (v.x() * dir.x + v.y() * dir.y + v.z() * dir.z);
         } catch (Throwable t) {
             return 0;
         }
