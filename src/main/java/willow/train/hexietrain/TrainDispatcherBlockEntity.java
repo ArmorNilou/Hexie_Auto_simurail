@@ -571,7 +571,16 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 未绑定：只做红石模式同步，不驱动任何东西。 */
     private void tickManual() {
-        if (isUnbound()) { SetOutputBrake(0); setAutoDirection(0f); setDispatcherState(DispatcherState.IDLE); return; }
+        if (isUnbound()) {
+            // 未绑定 = 不输出任何应力与红石信号：清通道、清 blockstate、切断动力学
+            SetOutputBrake(0);
+            setOutput(SignalChannel.LEFT, 0);
+            setOutput(SignalChannel.RIGHT, 0);
+            setAutoDirection(0f);
+            try { detachKinetics(); } catch (Throwable ignored) {}   // 断开传动，别让残余旋转带着车跑
+            setDispatcherState(DispatcherState.IDLE);
+            return;
+        }
         boolean manual = leftSignal() > 0 || rightSignal() > 0;
         // 红石只能单向把玩家拉进手操，绝不把玩家按下的手操改回自动（否则按钮会"弹回"）
         if (manual && !manualMode) { manualMode = true; setChanged(); sendData(); }
