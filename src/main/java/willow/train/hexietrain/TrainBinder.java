@@ -328,6 +328,15 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
                 PhysicsBogeyBlockEntity back  = all.get(Math.min(all.size() - 1, i * 2 + 1));
                 var fp = front.getAxle(true).getTrackPoint();
                 var bp = back.getAxle(false).getTrackPoint();
+                // 顺序修正：不按坐标扫描顺序，按"离虚拟车当前车头/车尾谁更近"来定前后
+                if (fp != null && bp != null) {
+                    try {
+                        var leadW = car.getLeadingPoint().getPosition(null);
+                        double dFp = fp.getPosition(null).distanceToSqr(leadW);
+                        double dBp = bp.getPosition(null).distanceToSqr(leadW);
+                        if (dBp < dFp) { var tmp = fp; fp = bp; bp = tmp; }   // 后轴的点更靠车头 → 交换
+                    } catch (Throwable ignored) {}
+                }
                 if (fp != null) copyInto(fp, car.getLeadingPoint());   // 恢复：能吸附（抖动另修）
                 if (bp != null) copyInto(bp, car.getTrailingPoint());
             }
