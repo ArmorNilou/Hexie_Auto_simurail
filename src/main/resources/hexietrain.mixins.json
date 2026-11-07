@@ -6,6 +6,7 @@
   "mixins": [
     "CarriageAnchorMixin",
     "NavTrackFilterMixin",
+    "SableChunkEventGuardMixin",
     "TrainSpeedInjectMixin",
     "TrainFuelMixin",
     "DimensionalCarriageWriteMixin"
