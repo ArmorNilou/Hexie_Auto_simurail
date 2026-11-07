@@ -140,8 +140,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private float autoDirection = 0f;
     /** 方块的"左"是否就是虚拟列车定义的前进方向（绑定/放置时一次判定，之后不变）。 */
     private Boolean leftIsForward = null;
-    private boolean polarityFixed = false;   // 方向极性是否已锁定
-    private int dirAgreeTicks = 0;          // 连续一致/相反的 tick 计数
+    private boolean dirProbing = false;      // 是否正在做 1tick 传动探针
+    private int dirProbeTicks = 0;
+    private int dirProbeCooldown = 0;
+    private boolean dirProbeBefore = true;
+    private double dirProbeStartSpeed = 0;
 
     /** 输出传动比 0~1：视距内按加速度渐变到 1，视距外直接用二进制。 */
     private float outputRatio = 0f;
@@ -712,7 +715,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 lastLegDest = st;
                 lastLegEntry = train.runtime.currentEntry;
                 HexieTrain.LOGGER.info("[HexieTrain][leg] → {} 沿轨长度={}", st.name, String.format("%.1f", legRemaining));
-                polarityFixed = false; dirAgreeTicks = 0;   // 新段重新判定方向
+                dirProbing = false; dirProbeCooldown = 0;   // 新段：允许重新探针
             }
 
             // ② 物理位移核减（带符号）
@@ -731,23 +734,45 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 return;
             }
 
-            // ★ 方向判定（唯一来源）：速度矢量 与 导航目标 的一致性，10 tick 稳定窗口
+            // ★ 前进方向：速度矢量 与 导航路径方向 是否一致（一致 = 正在朝目标前进）
+            // 输出侧与"前进"的对应关系不靠猜：停车时激活传动 1 tick，看车往哪边走，由此判定。
             try {
-                double vt   = bodySpeedAlongTrackBps();
-                double want = nav.destinationBehindTrain ? -1.0 : 1.0;
-                if (!polarityFixed) {
-                    if (Math.abs(vt) > 0.8) {
-                        if (Math.signum(vt) != Math.signum(want)) {
-                            if (--dirAgreeTicks <= -10) {
-                                boolean cur = (leftIsForward == null) ? true : leftIsForward;
-                                leftIsForward = !cur; polarityFixed = true;
-                                HexieTrain.LOGGER.info("[HexieTrain][dir] 连续逆行(vtrack={}, want={}) → 翻转极性={}", String.format("%.2f", vt), want, leftIsForward);
-                            }
-                        } else if (++dirAgreeTicks >= 10) {
-                            polarityFixed = true;
-                            HexieTrain.LOGGER.info("[HexieTrain][dir] 连续一致(vtrack={}, want={}) → 极性正确", String.format("%.2f", vt), want);
+                double vt = bodySpeedAlongTrackBps();                      // 速度矢量沿轨投影（带符号）
+                double want = nav.destinationBehindTrain ? -1.0 : 1.0;      // 导航期望的前进符号
+
+                if (Math.abs(vt) > 0.8) {
+                    // 在动：判断"是否朝目标前进"
+                    boolean consistent = Math.signum(vt) == Math.signum(want);
+                    if (!consistent && !dirProbing) {
+                        // 不一致 = 当前输出侧不是前进方向 → 交换输出侧（立即生效，下一 tick 重写 blockstate）
+                        boolean cur = (leftIsForward == null) ? true : leftIsForward;
+                        leftIsForward = !cur;
+                        HexieTrain.LOGGER.info("[HexieTrain][dir] 速度矢量({}) 与导航路径({}) 不一致 → 交换输出侧 leftIsForward={}",
+                                String.format("%.2f", vt), want, leftIsForward);
+                    }
+                } else if (!dirProbing && (dirProbeCooldown-- <= 0)) {
+                    // 静止：激活传动 1 tick 做探针，看车往哪边走
+                    dirProbing = true;
+                    dirProbeTicks = 1;
+                    dirProbeBefore = leftIsForward == null ? true : leftIsForward;
+                    dirProbeStartSpeed = measuredSpeedMps();
+                }
+
+                if (dirProbing) {
+                    if (dirProbeTicks-- > 0) {
+                        // 本 tick 保持当前输出侧，让传动真正作用 1 tick
+                    } else {
+                        double after = bodySpeedAlongTrackBps();
+                        boolean movedForward = Math.signum(after) == Math.signum(want);
+                        if (Math.abs(after) > 0.3 && !movedForward) {
+                            boolean cur = (leftIsForward == null) ? true : leftIsForward;
+                            leftIsForward = !cur;
+                            HexieTrain.LOGGER.info("[HexieTrain][dir] 1tick 探针：车朝反方向动({}) → 交换输出侧 leftIsForward={}",
+                                    String.format("%.2f", after), leftIsForward);
                         }
-                    } else dirAgreeTicks = 0;
+                        dirProbing = false;
+                        dirProbeCooldown = 20;   // 20 tick 内不再探针
+                    }
                 }
             } catch (Throwable ignored) {}
 
