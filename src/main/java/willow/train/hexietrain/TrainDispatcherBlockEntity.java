@@ -776,11 +776,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             try { dPhysNow = physicalDistanceTo(st); } catch (Throwable ignored) {}
             if (manualMode || scheduleSlot.isEmpty()) {
                 if (docking) { docking = false; HexieTrain.LOGGER.info("[dock] 手操/取表 → 取消解耦，虚拟车归位"); }
-            } else if (!docking && nav.destination != null && dPhysNow <= 12.0) {
+            } else if (!docking && nav.destination != null
+                    && (nav.distanceToDestination <= 15.0 || dPhysNow <= 12.0)) {   // 以 Create 的沿轨距离为主判据
                 docking = true; dockTicks = 0;
-                HexieTrain.LOGGER.info("[dock] 进站解耦开始：物理车自行停车，虚拟车独立进站（距站 {}）", String.format("%.1f", dPhysNow));
-            } else if (docking) {
-                dockTicks++;
+                HexieTrain.LOGGER.info("[dock] 进站解耦开始：沿轨距离={} 物理距离={} → 物理车自理，虚拟车独立进站",
+                        String.format("%.1f", nav.distanceToDestination), String.format("%.1f", dPhysNow));
                 if (nav.destination == null) {
                     if (dockTicks % 20 == 0) HexieTrain.LOGGER.info("[dock] 虚拟车已到站，等待下一段导航");
                 } else {
