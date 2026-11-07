@@ -760,9 +760,10 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 dockTicks++;
                 if (nav.destination == null) {
                     if (dockTicks % 20 == 0) HexieTrain.LOGGER.info("[dock] 虚拟车已到站，等待下一段导航");
-                } else if (dPhysNow > 30.0) {
+                } else {
+                    // 只要虚拟车拿到了新目标（新一段导航已启动）→ 立即合体，与物理车走多远无关
                     docking = false;
-                    HexieTrain.LOGGER.info("[dock] 下一段已开始（距站 {}）→ 重新合体", String.format("%.1f", dPhysNow));
+                    HexieTrain.LOGGER.info("[dock] 虚拟车已获得新目标 → 立即合体（距站 {}）", String.format("%.1f", dPhysNow));
                 }
             }
 
