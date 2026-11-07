@@ -596,6 +596,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             SetOutputBrake(0);
             setDispatcherState(DispatcherState.RUNNING);
         } else {
+            SetOutputBrake(0);
+            setAutoDirection(0f);   // 无红石→清掉残余扭矩，避免解绑后按上次方向继续跑
             setDispatcherState(DispatcherState.IDLE);
         }
         if (isUnbound()) { SetOutputBrake(0); setAutoDirection(0f); setDispatcherState(DispatcherState.IDLE); return; }
@@ -995,6 +997,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 拆除列车身份：解除寻路 → 离站 → 从 RAILWAYS 移除。 */
     public void dissolve() {
         if (boundTrain == null) return;
+        try { SetOutputBrake(0); setAutoDirection(0f); } catch (Throwable ignored) {}   // 注销时清掉残余输出
         if (boundTrain != null) BY_TRAIN.remove(boundTrain);
         if (level != null && !level.isClientSide) {
             Train train = Create.RAILWAYS.trains.get(boundTrain);
