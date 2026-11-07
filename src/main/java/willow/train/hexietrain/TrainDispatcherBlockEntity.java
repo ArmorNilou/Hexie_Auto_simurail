@@ -258,7 +258,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     public int externalRight() { return extRight; }
 
     /** 未绑定：没有时刻表且没有物理红石输入 → 不输出任何应力/通道。 */
-    public boolean isUnbound() { return scheduleSlot.isEmpty() && extLeft == 0 && extRight == 0; }
+    public boolean isUnbound() { return scheduleSlot.isEmpty() && leftSignal() == 0 && rightSignal() == 0; }   // 直接读红石，不用快照
     public int leftSignal() {
         return sideSignal(true);
     }
@@ -581,6 +581,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 未绑定：只做红石模式同步，不驱动任何东西。 */
     private void tickManual() {
+        updateExternalInput(leftSignal(), rightSignal());   // 手动手无时刻表时也要同步快照
         if (isUnbound()) { SetOutputBrake(0); setAutoDirection(0f); setDispatcherState(DispatcherState.IDLE); return; }
         boolean manual = leftSignal() > 0 || rightSignal() > 0;
         // 红石只能单向把玩家拉进手操，绝不把玩家按下的手操改回自动（否则按钮会"弹回"）
