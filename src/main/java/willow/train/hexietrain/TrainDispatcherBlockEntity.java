@@ -582,9 +582,11 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 手操/未绑�
                 } else if (stM != null && stM != lastStation) {
 if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} → 拽回物理车", stM.name); }
                     lastStation = stM;
+                } else if (docking && stM != null && navM.distanceToDestination > 10.0) {
+                    forceAttach(train);
+                    HexieTrain.LOGGER.info("[dock] 已离开站台区（沿轨 {}）→ 合体", String.format("%.1f", navM.distanceToDestination));
                 } else if (!docking && stM != null) {
                     double dNow = 0;
-                    try { dNow = physicalDistanceTo(stM); } catch (Throwable ignored) {}
                     if (dNow <= 10.0) {   // 到站窗口（和谐 StationStopControl）→ 分开，各自进站
                         // 解耦瞬间把物理车的速度交给虚拟车（否则注入一关，它就是 0 速，永远爬不进站）
                         try {
@@ -789,7 +791,6 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
             if (docking) {
                 // 解耦期间：虚拟车交给 Create（我们不碰），物理车由我们独立刹到站台 —— 两条线程互不干扰
                 double dPhys2 = 0;
-                try { dPhys2 = physicalDistanceTo(train.navigation.destination); } catch (Throwable ignored) {}
                 double vNow2 = Math.abs(measuredSpeedMps());
                 double targetV2 = dPhys2 > SLOW_ZONE_BLOCKS ? Double.MAX_VALUE
                         : Math.max(CREEP_SPEED_MPS, SLOW_ZONE_SPEED_MPS * (dPhys2 / SLOW_ZONE_BLOCKS));
