@@ -147,6 +147,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private GlobalStation lastStation = null;   // 上一个导航目标站（目标清空后仍可用于量距离）
     private int dockTicks = 0;
     private double lastDDest = -1;        // 上一次的到站距离，用来判断"是否在靠近站台"
+    private boolean anchorOnce = true;      // 只在建车/强制吸附时锚定一次，之后交给 Create 自己 travel
     private boolean dirCheckPending = false;   // 过信号机时置位，下一 tick 看一眼
     private boolean dirResolved = false;     // 本段方向是否已判定（判完不再计算）
     private boolean dirProbing = false;      // 是否正在做 1tick 传动探针
@@ -599,7 +600,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
             driveToStation(train);
             // TP 锚定：把虚拟车厢的点直接摆到物理转向架位置（每 tick，绝对覆盖）
-            if (!docking && level instanceof ServerLevel slA) TrainBinder.reanchor(train, slA, worldPosition);   // 解耦期间不锚定
+            if (anchorOnce && level instanceof ServerLevel slA) { TrainBinder.reanchor(train, slA, worldPosition); anchorOnce = false; }
             // 四态赋值：待命 / 行驶中 / 滑车 / 急刹
             try {
                 if (train.navigation.destination == null) {
@@ -1110,6 +1111,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
     public void bindTrain(UUID id) {
+        anchorOnce = true;   // 新绑定：先锚定一次，之后靠速度注入让 Create 自己走
         BY_TRAIN.put(id, this);
         leftIsForward = null;   // 重新判定朝向
         boundTrain = id;
