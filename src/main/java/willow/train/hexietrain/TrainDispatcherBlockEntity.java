@@ -916,6 +916,7 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
     @Override
     public void remove() {
         // 只有"方块真的不在了"才抹除：区块卸载/走远不得清绑定
+        try { if (boundTrain != null && worldPosition.equals(TrainBinder.TRAIN_DISPATCHERS.get(boundTrain))) TrainBinder.TRAIN_DISPATCHERS.remove(boundTrain); } catch (Throwable ignored) {}   // 方块没了：撤销登记
         boolean blockGone = level != null && !level.getBlockState(worldPosition).is(getBlockState().getBlock());
         boolean unloading = false;
         try { unloading = isChunkUnloaded(); } catch (Throwable ignored) {}
@@ -1146,6 +1147,7 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
     protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.read(tag, registries, clientPacket);
         if (tag.hasUUID("BoundTrain")) boundTrain = tag.getUUID("BoundTrain");   // 缺失时保留已有绑定
+        if (boundTrain != null) TrainBinder.TRAIN_DISPATCHERS.putIfAbsent(boundTrain, worldPosition);   // 读档即补登（世界重载后表为空）
         if (boundTrain != null) {
             // 重启后 OUR_TRAINS 是空的，必须重新登记，否则车厢会失去 mixin 保护
             TrainBinder.OUR_TRAINS.add(boundTrain);
@@ -1361,6 +1363,7 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
     private boolean isPrimaryDispatcher() {
         if (boundTrain == null) return false;
         net.minecraft.core.BlockPos primary = TrainBinder.TRAIN_DISPATCHERS.get(boundTrain);
+        if (primary == null) { TrainBinder.TRAIN_DISPATCHERS.put(boundTrain, worldPosition); return true; }   // 表丢失（世界重载等）→ 自己补登
         return primary != null && primary.equals(worldPosition);
     }
 
