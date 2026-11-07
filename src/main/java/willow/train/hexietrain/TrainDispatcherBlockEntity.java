@@ -841,7 +841,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             }
             // 1 格内不再强制满刹：交给 Create 判到站，我们只按曲线刹
 
-            float navDir = (float) (nav.destinationBehindTrain ? -1.0 : 1.0);
+            float navDir = (float) (nav.destinationBehindTrain ? 1.0 : -1.0);   // 语义与直觉相反：behind=true 时要往 + 走
             setAutoDirection(navDir);   // 未到站就一个方向，不设任何阈值区
 
             // 到站保持（照抄和谐的 StationStopControl 判据：速度≈0 且距站 ≤10 米）
