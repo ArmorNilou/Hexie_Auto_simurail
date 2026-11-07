@@ -396,6 +396,16 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     public void setManualMode(boolean value) {
         manualMode = value;
         if (level != null && !level.isClientSide && boundTrain != null) {
+            // 解绑 = 直接切断传动，不管方向、不管速度（需求 11）
+            if (scheduleSlot.isEmpty() && leftSignal() == 0 && rightSignal() == 0) {
+                SetOutputBrake(0);
+                setOutput(SignalChannel.LEFT, 0);
+                setOutput(SignalChannel.RIGHT, 0);
+                setAutoDirection(0f);
+                try { detachKinetics(); } catch (Throwable ignored) {}
+                setDispatcherState(DispatcherState.IDLE);
+                return;
+            }
             Train train = Create.RAILWAYS.trains.get(boundTrain);
             probe(train);
             if (train != null) {
