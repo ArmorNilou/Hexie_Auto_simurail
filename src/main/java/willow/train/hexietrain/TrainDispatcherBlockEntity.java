@@ -219,7 +219,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
 
     /** true = 对刹车通道做平方根补偿（抵消转向架的 Mth.square）。 */
-    private boolean linearizeBrake = true;
 
 
     public TrainDispatcherBlockEntity(BlockPos pos, BlockState state) {
@@ -1043,14 +1042,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     }
 
 
-    public boolean linearizeBrake() {
-        return linearizeBrake;
-    }
-
-    public void setLinearizeBrake(boolean value) {
-        linearizeBrake = value;
-        setChanged();
-    }
 
     // ══════════════════════ 存档 ══════════════════════
 
@@ -1065,7 +1056,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         net.minecraft.nbt.ListTag names = new net.minecraft.nbt.ListTag();
         for (String s : stopNames) names.add(net.minecraft.nbt.StringTag.valueOf(s));
         tag.put("StopNames", names);
-        tag.putBoolean("LinearizeBrake", linearizeBrake);
         for (int i = 0; i < FREQ_SLOTS; i++) {
             if (!frequencies[i].isEmpty()) {
                 tag.put("Freq" + i, frequencies[i].save(registries));
@@ -1090,7 +1080,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         stallTicks = 0;
         lastLeadPos = null;
         lastDestination = null;
-        linearizeBrake = !tag.contains("LinearizeBrake") || tag.getBoolean("LinearizeBrake");
 
         scheduleSlot = tag.contains("Schedule")
                 ? ItemStack.parseOptional(registries, tag.getCompound("Schedule"))
