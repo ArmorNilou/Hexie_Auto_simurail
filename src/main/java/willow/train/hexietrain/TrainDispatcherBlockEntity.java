@@ -580,6 +580,14 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
                     double dNow = 0;
                     try { dNow = physicalDistanceTo(stM); } catch (Throwable ignored) {}
                     if (dNow <= 10.0) {   // 到站窗口（和谐 StationStopControl）→ 分开，各自进站
+                        // 解耦瞬间把物理车的速度交给虚拟车（否则注入一关，它就是 0 速，永远爬不进站）
+                        try {
+                            double v0 = Math.abs(bodySpeedAlongTrackBps()) / 20.0;   // 格/tick
+                            float signed = (float) ((train.navigation.destinationBehindTrain ? -1.0 : 1.0) * v0);
+                            train.speed = signed;
+                            train.targetSpeed = signed;
+                            HexieTrain.LOGGER.info("[dock] 交接初速度：{} 格/tick 给虚拟车", String.format("%.4f", v0));
+                        } catch (Throwable ignored) {}
                         docking = true;
                         HexieTrain.LOGGER.info("[dock] 进站解耦：物理距站 {} → 物理车自理，虚拟车自己进站", String.format("%.1f", dNow));
                     }
