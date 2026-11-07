@@ -598,10 +598,11 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
             driveToStation(train);
             // TP 锚定：把虚拟车厢的点直接摆到物理转向架位置（每 tick，绝对覆盖）
             if (!docking && level instanceof ServerLevel slA) {
-                // 容差纠偏：误差超过"一 tick 最大物理位移 + 余量"才锚定一次，平时保留 travel 结果（不抹事件）
-                double errA = TrainBinder.anchorError(slA, worldPosition, train);
                 double maxStep = Math.abs(measuredSpeedMps()) / 20.0 + 0.5;
-                if (errA > maxStep) TrainBinder.reanchor(train, slA, worldPosition);
+                // 合体期：枪毙 Create 的位移算法——速度清零，位置只由我们写（单一写入者，避免两套算法互相拉扯）
+                train.speed = 0f;
+                train.targetSpeed = 0f;
+                TrainBinder.reanchor(train, slA, worldPosition);   // 每 tick 无条件贴物理车
             }
             // 四态赋值：待命 / 行驶中 / 滑车 / 急刹
             try {
