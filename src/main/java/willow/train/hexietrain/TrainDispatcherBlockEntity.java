@@ -601,7 +601,12 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
             } catch (Throwable ignored) {}
             driveToStation(train);
             // TP 锚定：把虚拟车厢的点直接摆到物理转向架位置（每 tick，绝对覆盖）
-            if (!docking && level instanceof ServerLevel slA) TrainBinder.reanchor(train, slA, worldPosition);   // 需求 8：解耦期间不锚定
+            if (!docking && level instanceof ServerLevel slA) {
+                // 容差纠偏：误差超过"一 tick 最大物理位移 + 余量"才锚定一次，平时保留 travel 结果（不抹事件）
+                double errA = TrainBinder.anchorError(slA, worldPosition, train);
+                double maxStep = Math.abs(measuredSpeedMps()) / 20.0 + 0.5;
+                if (errA > maxStep) TrainBinder.reanchor(train, slA, worldPosition);
+            }
             // 四态赋值：待命 / 行驶中 / 滑车 / 急刹
             try {
                 if (train.navigation.destination == null) {
