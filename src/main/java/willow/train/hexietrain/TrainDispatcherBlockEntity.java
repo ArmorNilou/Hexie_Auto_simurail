@@ -375,6 +375,12 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 需求 8：解耦期间不注入速度，让 Create 自己驱动虚拟车进站。 */
     public boolean shouldInjectSpeed() { return !docking; }
     public double physicalSpeedPerTick() { try { return bodySpeedAlongTrackBps() / 20.0; } catch (Throwable t) { return 0.0; } }
+
+    /** 强制把虚拟车拽到物理车位置：不管它在哪（哪怕在站台里），立刻锚定。 */
+    private void forceAttach(Train train) {
+        docking = false;
+        try { if (level instanceof ServerLevel slF) TrainBinder.reanchor(train, slF, worldPosition); } catch (Throwable ignored) {}
+    }
     public boolean manualMode() {
         return manualMode;
     }
@@ -395,6 +401,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         manualMode = value;
         if (level != null && !level.isClientSide && boundTrain != null) {
             // 解绑 = 直接切断传动，不管方向、不管速度（需求 11）
+            try { if (boundTrain != null) { var trD = Create.RAILWAYS.trains.get(boundTrain); if (trD != null) forceAttach(trD); } } catch (Throwable ignored) {}   // 取表：先把虚拟车拽回物理车再切断
             if (scheduleSlot.isEmpty() && leftSignal() == 0 && rightSignal() == 0) {
                 SetOutputBrake(0);
                 setOutput(SignalChannel.LEFT, 0);
@@ -553,7 +560,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             // 手动模式：blockstate 由 Block.neighborChanged 独占，我们绝不写（否则会抹掉红石状态）
             if (manualMode) {
                 // 需求 9/10：手操时虚拟车必须跟着物理车（强制吸附），且不再强制满刹
-                docking = false;
+                forceAttach(train);   // 不管虚拟车在哪，直接拽到物理车位置
                 try { if (level instanceof ServerLevel slM) TrainBinder.reanchor(train, slM, worldPosition); } catch (Throwable ignored) {}
                 setDispatcherState(DispatcherState.IDLE);
                 SetOutputBrake(0);
@@ -565,9 +572,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 var navM = train.navigation;
                 GlobalStation stM = navM == null ? null : navM.destination;
                 if (manualMode || isUnbound()) {
-                    if (docking) { docking = false; HexieTrain.LOGGER.info("[dock] 手操/未绑定 → 立即合体"); }
+if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 手操/未绑定 → 拽回物理车"); }
                 } else if (stM != null && stM != lastStation) {
-                    if (docking) { docking = false; HexieTrain.LOGGER.info("[dock] 新目标 {} → 合体", stM.name); }
+if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} → 拽回物理车", stM.name); }
                     lastStation = stM;
                 } else if (!docking && stM != null) {
                     double dNow = 0;
