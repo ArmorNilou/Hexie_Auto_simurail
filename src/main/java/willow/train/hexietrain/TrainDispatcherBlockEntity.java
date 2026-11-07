@@ -751,7 +751,18 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private void driveToStation(Train train) {
         try {
             // 需求 8：解耦期间不干预 Create —— 让它自己驱动虚拟车进站（否则 targetSpeed=0 会把它按住不动）
-            if (docking) return;
+            if (docking) {
+                // 解耦期间：虚拟车交给 Create（我们不碰），物理车由我们独立刹到站台 —— 两条线程互不干扰
+                double dPhys2 = 0;
+                try { dPhys2 = physicalDistanceTo(train.navigation.destination); } catch (Throwable ignored) {}
+                double vNow2 = Math.abs(measuredSpeedMps());
+                double targetV2 = dPhys2 > SLOW_ZONE_BLOCKS ? Double.MAX_VALUE
+                        : Math.max(CREEP_SPEED_MPS, SLOW_ZONE_SPEED_MPS * (dPhys2 / SLOW_ZONE_BLOCKS));
+                SetOutputBrake(vNow2 > targetV2 + 0.25 ? SignalChannel.brakeStrength(dPhys2, vNow2 / 20.0, linearizeBrake) : 0);
+                setAutoDirection(dPhys2 > 0.5 ? (float) (train.navigation.destinationBehindTrain ? -1.0 : 1.0) : 0f);
+                if (dPhys2 <= 0.5 && vNow2 <= 0.05) SetOutputBrake(15);   // 物理车停稳在站台
+                return;
+            }
             // 速度由 mixin 每 tick 注入物理位移，不再冻结
             train.targetSpeed = 0;
             if (train.derailed || train.invalid || !isPrimaryDispatcher()) return;
