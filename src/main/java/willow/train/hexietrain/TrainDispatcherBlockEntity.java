@@ -379,7 +379,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 物理车沿轨位移（格/tick，带符号），供速度注入 mixin 使用。 */
     /** 需求 8：解耦期间不注入速度，让 Create 自己驱动虚拟车进站。 */
-    public boolean shouldInjectSpeed() { return !docking; }
+    public boolean shouldInjectSpeed() { return docking; }   // 只在解耦（进站）窗口注入速度
     public double physicalSpeedPerTick() { try { return bodySpeedAlongTrackBps() / 20.0; } catch (Throwable t) { return 0.0; } }
 
     /** 强制把虚拟车拽到物理车位置：不管它在哪（哪怕在站台里），立刻锚定。 */
@@ -604,12 +604,9 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
             driveToStation(train);
             // TP 锚定：把虚拟车厢的点直接摆到物理转向架位置（每 tick，绝对覆盖）
             if (!docking && level instanceof ServerLevel slA) {
-                // 容差纠偏：误差超过"一 tick 最大物理位移 + 余量"才锚定一次，平时保留 travel 结果（不抹事件）
-                double errA = TrainBinder.anchorError(slA, worldPosition, train);
-                double maxStep = Math.abs(measuredSpeedMps()) / 20.0 + 0.5;
-                if (errA > maxStep) TrainBinder.reanchor(train, slA, worldPosition);
+                // 合体阶段：每 tick 全量锚定（物理车加速度远大于虚拟车，必须一次给足）
+                TrainBinder.reanchor(train, slA, worldPosition);
             }
-            // 四态赋值：待命 / 行驶中 / 滑车 / 急刹
             try {
                 if (train.navigation.destination == null) {
                     setDispatcherState(DispatcherState.IDLE);
