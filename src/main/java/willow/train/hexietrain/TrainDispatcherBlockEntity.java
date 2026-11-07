@@ -155,13 +155,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private boolean isOwner() {
         if (boundTrain == null) return false;
         TrainDispatcherBlockEntity o = TRAIN_OWNER.putIfAbsent(boundTrain, this);
-        if (o == null || o == this) return true;
-        // 自愈：旧实例已失效（被移除 / 无世界 / 换了维度 / 不同坐标）→ 由当前实例接管
-        if (o.isRemoved() || o.getLevel() == null || o.getLevel() != level || !o.worldPosition.equals(worldPosition)) {
-            TRAIN_OWNER.put(boundTrain, this);
-            return true;
-        }
-        return false;
+        return o == null || o == this;
     }
 
     public static Set<TrainDispatcherBlockEntity> activeDispatchers() {
@@ -379,7 +373,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 物理车沿轨位移（格/tick，带符号），供速度注入 mixin 使用。 */
     /** 需求 8：解耦期间不注入速度，让 Create 自己驱动虚拟车进站。 */
-    public boolean shouldInjectSpeed() { return docking; }   // 只在解耦（进站）窗口注入速度
+    public boolean shouldInjectSpeed() { return !docking; }
     public double physicalSpeedPerTick() { try { return bodySpeedAlongTrackBps() / 20.0; } catch (Throwable t) { return 0.0; } }
 
     /** 强制把虚拟车拽到物理车位置：不管它在哪（哪怕在站台里），立刻锚定。 */
@@ -582,11 +576,9 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 手操/未绑�
                 } else if (stM != null && stM != lastStation) {
 if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} → 拽回物理车", stM.name); }
                     lastStation = stM;
-                } else if (docking && stM != null && navM.distanceToDestination > 10.0) {
-                    forceAttach(train);
-                    HexieTrain.LOGGER.info("[dock] 已离开站台区（沿轨 {}）→ 合体", String.format("%.1f", navM.distanceToDestination));
                 } else if (!docking && stM != null) {
                     double dNow = 0;
+                    try { dNow = physicalDistanceTo(stM); } catch (Throwable ignored) {}
                     if (dNow <= 10.0) {   // 到站窗口（和谐 StationStopControl）→ 分开，各自进站
                         // 解耦瞬间把物理车的速度交给虚拟车（否则注入一关，它就是 0 速，永远爬不进站）
                         try {
@@ -603,10 +595,8 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
             } catch (Throwable ignored) {}
             driveToStation(train);
             // TP 锚定：把虚拟车厢的点直接摆到物理转向架位置（每 tick，绝对覆盖）
-            if (!docking && level instanceof ServerLevel slA) {
-                // 合体阶段：每 tick 全量锚定（物理车加速度远大于虚拟车，必须一次给足）
-                TrainBinder.reanchor(train, slA, worldPosition);
-            }
+            if (!docking && level instanceof ServerLevel slA) TrainBinder.reanchor(train, slA, worldPosition);   // 需求 8：解耦期间不锚定
+            // 四态赋值：待命 / 行驶中 / 滑车 / 急刹
             try {
                 if (train.navigation.destination == null) {
                     setDispatcherState(DispatcherState.IDLE);
@@ -775,29 +765,17 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
 
     private void driveToStation(Train train) {
         try {
-            // 诊断：每秒报告一次各闸门状态（不改逻辑）
-            if (diagTicks % 20 == 0) {
-                try {
-                    HexieTrain.LOGGER.info("[HexieTrain][gate] docking={} derailed={} invalid={} primary={} dest={} leg={}",
-                            docking, train.derailed, train.invalid, isPrimaryDispatcher(),
-                            train.navigation == null || train.navigation.destination == null ? "null" : train.navigation.destination.name,
-                            String.format("%.1f", legRemaining));
-                } catch (Throwable ignored) {}
-            }
             // 需求 8：解耦期间不干预 Create —— 让它自己驱动虚拟车进站（否则 targetSpeed=0 会把它按住不动）
             if (docking) {
                 // 解耦期间：虚拟车交给 Create（我们不碰），物理车由我们独立刹到站台 —— 两条线程互不干扰
-                // 解耦期间：物理距离只来自物理车与站台，虚拟车的任何数值都不参与（否则就是"虚拟车绑架物理车"）
                 double dPhys2 = 0;
                 try { dPhys2 = physicalDistanceTo(train.navigation.destination); } catch (Throwable ignored) {}
                 double vNow2 = Math.abs(measuredSpeedMps());
                 double targetV2 = dPhys2 > SLOW_ZONE_BLOCKS ? Double.MAX_VALUE
                         : Math.max(CREEP_SPEED_MPS, SLOW_ZONE_SPEED_MPS * (dPhys2 / SLOW_ZONE_BLOCKS));
-                int b2 = (vNow2 > targetV2 + 0.25) ? SignalChannel.brakeStrength(dPhys2, vNow2 / 20.0, linearizeBrake) : 0;
-                if (dPhys2 <= 0.5 && vNow2 <= 0.05) b2 = 15;                       // 停稳在站台：满刹保持
-                SetOutputBrake(b2);
-                // 刹车时不输出扭矩，否则"刹-推"来回振荡，永远停不下来
-                setAutoDirection(b2 > 0 ? 0f : (dPhys2 > 0.5 ? (float) (train.navigation.destinationBehindTrain ? -1.0 : 1.0) : 0f));
+                SetOutputBrake(vNow2 > targetV2 + 0.25 ? SignalChannel.brakeStrength(dPhys2, vNow2 / 20.0, linearizeBrake) : 0);
+                setAutoDirection(dPhys2 > 0.5 ? (float) (train.navigation.destinationBehindTrain ? -1.0 : 1.0) : 0f);
+                if (dPhys2 <= 0.5 && vNow2 <= 0.05) SetOutputBrake(15);   // 物理车停稳在站台
                 return;
             }
             // 速度由 mixin 每 tick 注入物理位移，不再冻结
@@ -947,7 +925,6 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
     public void remove() {
         // 只有"方块真的不在了"才抹除：区块卸载/走远不得清绑定
         try { if (boundTrain != null && worldPosition.equals(TrainBinder.TRAIN_DISPATCHERS.get(boundTrain))) TrainBinder.TRAIN_DISPATCHERS.remove(boundTrain); } catch (Throwable ignored) {}   // 方块没了：撤销登记
-        try { if (boundTrain != null && TRAIN_OWNER.get(boundTrain) == this) TRAIN_OWNER.remove(boundTrain); } catch (Throwable ignored) {}   // 实例销毁：撤销 owner 登记
         boolean blockGone = level != null && !level.getBlockState(worldPosition).is(getBlockState().getBlock());
         boolean unloading = false;
         try { unloading = isChunkUnloaded(); } catch (Throwable ignored) {}

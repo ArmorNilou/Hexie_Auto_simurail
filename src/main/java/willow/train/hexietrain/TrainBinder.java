@@ -310,20 +310,6 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
      * TP 锚定：把虚拟列车每节车厢的前后点，直接写到物理转向架当前的轨道点。
      * 照 CRH-HeXie 的 CreateTrainBridge.copy() 语义——绝对覆盖，不靠积分。
      */
-    /** 虚拟车头与物理转向架的世界距离（用来判断是否需要纠偏）。 */
-    public static double anchorError(ServerLevel level, BlockPos center, Train train) {
-        try {
-            if (train == null || train.carriages.isEmpty()) return 0;
-            var first = lastFront;
-            if (first == null || first.isRemoved()) return 0;
-            var phys = first.getAxle(true).getTrackPoint();
-            if (phys == null) return 0;
-            var virt = train.carriages.getFirst().getLeadingPoint().getPosition(null);
-            return phys.getPosition(null).distanceTo(virt);
-        } catch (Throwable t) { return 0; }
-    }
-
-    private static PhysicsBogeyBlockEntity lastFront;   // 上次锚定用的前转向架（供误差检查，避免每 tick 扫描）
     public static void reanchor(Train train, ServerLevel level, BlockPos center) {
         try {
             if (train == null || train.carriages.isEmpty()) return;
@@ -340,7 +326,6 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
                 Carriage car = train.carriages.get(i);
                 PhysicsBogeyBlockEntity front = all.get(Math.min(all.size() - 1, i * 2));
                 PhysicsBogeyBlockEntity back  = all.get(Math.min(all.size() - 1, i * 2 + 1));
-                lastFront = front;
                 var fp = front.getAxle(true).getTrackPoint();
                 var bp = back.getAxle(false).getTrackPoint();
                 // 顺序修正：不按坐标扫描顺序，按"离虚拟车当前车头/车尾谁更近"来定前后
@@ -382,30 +367,16 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
         } catch (Throwable ignored) {}
     }
 
-    /**
-     * 绝对写入，但先做"边一致性"校验：只允许写到自己所在的边、或与之相连的边。
-     * 目的：物理转向架的 getTrackPoint() 取的是"最近边"，环线两侧靠近时会抓到对面的边，
-     * 直接写入会让虚拟车跳到不相邻的轨道上（表现为在轨道外乱窜）。
-     */
     private static void copyInto(TravellingPoint src, TravellingPoint dst) {
-        if (src == null || dst == null) return;
-        try {
-            if (dst.edge != null && src.edge != null && src.edge != dst.edge) {
-                boolean connected = dst.edge.node1 == src.edge.node1 || dst.edge.node1 == src.edge.node2
-                        || dst.edge.node2 == src.edge.node1 || dst.edge.node2 == src.edge.node2;
-                if (!connected) return;                 // 不相邻的边：拒绝，保持当前点不动
-            }
-            // 统一到"边自身方向"：position 一律相对 edge.node1 计量，避免前后两点方向相反导致车体乱转
-            double len = src.edge.getLength();
-            boolean flipped = (src.node1 != src.edge.node1);
-            dst.node1 = src.edge.node1;
-            dst.node2 = src.edge.node2;
-            dst.edge = src.edge;
-            dst.position = flipped ? Math.max(0.0, len - src.position) : src.position;
-            dst.upsideDown = src.upsideDown;
-            dst.blocked = src.blocked;
-        } catch (Throwable ignored) {}
+        if (dst == null) return;
+        dst.node1 = src.node1;
+        dst.node2 = src.node2;
+        dst.edge = src.edge;
+        dst.position = src.position;
+        dst.upsideDown = src.upsideDown;
+        dst.blocked = src.blocked;
     }
+
     private static TravellingPoint copyPoint(TravellingPoint src) {
         TrackNode n1 = src.node1;
         TrackNode n2 = src.node2;
