@@ -514,6 +514,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     /** 自动模式：方向与距离都来自 Create 的导航，我们只输出传动与刹车。 */
     private void tickAutomated() {
         try {
+            // 进入玩家手操 或 取走时刻表 → 立即合体：虚拟车跟回物理车（恢复注入与锚定）
+            if ((manualMode || isUnbound()) && docking) {
+                docking = false;
+                HexieTrain.LOGGER.info("[dock] 进入手操/未绑定 → 立即合体（虚拟车跟回物理车）");
+            }
             Train train = Create.RAILWAYS.trains.get(boundTrain);
             if (train == null) return;
             ensureConductors(train);
