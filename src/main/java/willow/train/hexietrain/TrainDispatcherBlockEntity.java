@@ -316,15 +316,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 自动模式：一切由 Create 的导航决定方向与距离，我们只负责输出传动与刹车。 */
     /** 保证列车有"列车员"标志：DestinationInstruction.start 的第一道门槛。 */
-    private void ensureConductors(Train train) {
-        try {
-            if (train == null) return;
-            for (var c : train.carriages) {
-                if (c.presentConductors == null) continue;
-                c.presentConductors.replace(v -> Boolean.TRUE);
-            }
-        } catch (Throwable ignored) {}
-    }
 
 
 
@@ -510,7 +501,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
         try {
             Train train = Create.RAILWAYS.trains.get(boundTrain);
             if (train == null) return;
-            ensureConductors(train);
 
             // ── 飞行记录仪：一次测试收集全部状态 ──
             if (!isPrimaryDispatcher()) return;   // 只让主调度器打日志，副本不刷屏
