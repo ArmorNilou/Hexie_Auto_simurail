@@ -811,16 +811,19 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double brakeFrac = dLeft >= stopZone ? 0.0 : 1.0 - dLeft / stopZone;   // 0→1，越近越强
             int brakeVal = (int) Math.round(15.0 * brakeFrac);
             if (dLeft < 1.0) brakeVal = 15;                                        // 1 格内最强刹
+            // 反转扭矩制动（旧物理刹车法，保留）：只有"车仍朝目标运动"时才是制动；
+            // 若车已经在反向运动，反转等于继续加速倒退，必须改为切断
+            double vtNow = bodySpeedAlongTrackBps();
+            boolean stillApproaching = Math.abs(vtNow) > 1.0E-3 && Math.signum(vtNow) == Math.signum(nav.destinationBehindTrain ? -1.0 : 1.0);
             if (legRemaining <= stopZone) {
-                if (Math.abs(measuredSpeedMps()) > 0.4)
-                    setAutoDirection((float) -(nav.destinationBehindTrain ? -1.0 : 1.0));   // 反转扭矩制动
+                if (Math.abs(measuredSpeedMps()) > 0.4 && stillApproaching)
+                    setAutoDirection((float) -(nav.destinationBehindTrain ? -1.0 : 1.0));   // 反转顶住（仅在仍在接近时）
                 else
-                    setAutoDirection(0f);                                                    // 停稳后切断
+                    setAutoDirection(0f);                                                    // 停稳 / 已在倒退 → 切断
+            // ④ 刹车
             } else {
                 setAutoDirection((float) (nav.destinationBehindTrain ? -1.0 : 1.0));
             }
-
-            // ④ 刹车
             double targetV = legRemaining > SLOW_ZONE_BLOCKS ? Double.MAX_VALUE
                     : Math.max(CREEP_SPEED_MPS, SLOW_ZONE_SPEED_MPS * (legRemaining / SLOW_ZONE_BLOCKS));
             SetOutputBrake(Math.max(brakeVal, v > targetV + 0.25 ? SignalChannel.brakeStrength(legRemaining, v / 20.0, linearizeBrake) : 0));
