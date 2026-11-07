@@ -190,6 +190,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private boolean leakSwept = false;
 
     /** true = 玩家操控中（暂停自动寻路）；false = 自动驾驶中。 */
+    /** 进站解耦（需求 8）：true 时虚拟车自己进站、物理车自理。 */
+    private boolean docking = false;
+    private GlobalStation lastStation = null;
     private boolean manualMode = false;
 
     /** 手动直驱的最大速度（格/tick）。1.0 = 20 格/秒。 */
@@ -547,7 +550,14 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 return;
             }
             // 手动模式：blockstate 由 Block.neighborChanged 独占，我们绝不写（否则会抹掉红石状态）
-            if (manualMode) { setDispatcherState(DispatcherState.IDLE); SetOutputBrake(15); return; }
+            if (manualMode) {
+                // 需求 9/10：手操时虚拟车必须跟着物理车（强制吸附），且不再强制满刹
+                docking = false;
+                try { if (level instanceof ServerLevel slM) TrainBinder.reanchor(train, slM, worldPosition); } catch (Throwable ignored) {}
+                setDispatcherState(DispatcherState.IDLE);
+                SetOutputBrake(0);
+                return;
+            }
 
             driveToStation(train);
             // TP 锚定：把虚拟车厢的点直接摆到物理转向架位置（每 tick，绝对覆盖）
@@ -769,27 +779,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                     : Math.max(CREEP_SPEED_MPS, SLOW_ZONE_SPEED_MPS * (legRemaining / SLOW_ZONE_BLOCKS));
             SetOutputBrake(Math.max(brakeVal, v > targetV + 0.25 ? SignalChannel.brakeStrength(legRemaining, v / 20.0, linearizeBrake) : 0));
 
-            // ⑤ 到站：四步（snap → arriveAt → 清 destination → 清 path）
-            if (legRemaining <= 0.05 && v < 0.5) {
-                snapVirtualTo(train, st);
-                try {
-                    var rt = train.runtime;
-                    if (rt.state != com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT)
-                        rt.state = com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT;
-                    // 条件列为空会导致 tickConditions 永不推进：补一个空列
-                    if (rt.schedule != null && rt.currentEntry >= 0 && rt.currentEntry < rt.schedule.entries.size()) {
-                        var conds = rt.schedule.entries.get(rt.currentEntry).conditions;
-                        if (conds.isEmpty()) conds.add(new java.util.ArrayList<>());
-                    }
-                    train.arriveAt(st); nav.destination = null;   // 唯一新增：清目标，状态机才能推进
-                } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][arrive] {}", t.toString()); }
-                try { var f2 = nav.getClass().getDeclaredField("currentPath"); f2.setAccessible(true); ((java.util.List<?>) f2.get(nav)).clear(); } catch (Throwable ignored) {}
-                nav.destination = null;
-                dwellingStation = st;
-                HexieTrain.LOGGER.info("[HexieTrain][arrive] {} 到站（物理车位置触发）", st.name);
-                legRemaining = -1;
-                lastLegDest = null;
-            }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][auto] {}", t.toString()); }
     }
 
