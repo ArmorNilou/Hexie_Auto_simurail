@@ -140,6 +140,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private float autoDirection = 0f;
     /** 方块的"左"是否就是虚拟列车定义的前进方向（绑定/放置时一次判定，之后不变）。 */
     private Boolean leftIsForward = null;
+    private Object lastNavDest = null;      // 上一次的导航目标；变化 = 虚拟车重新启动导航
+    private double lastSignalDist = -1;    // 上一次的"到下一信号机的距离"，用来判断是否过了一个信号机
     private boolean dirResolved = false;     // 本段方向是否已判定（判完不再计算）
     private boolean dirProbing = false;      // 是否正在做 1tick 传动探针
     private int dirProbeTicks = 0;
@@ -716,7 +718,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 lastLegDest = st;
                 lastLegEntry = train.runtime.currentEntry;
                 HexieTrain.LOGGER.info("[HexieTrain][leg] → {} 沿轨长度={}", st.name, String.format("%.1f", legRemaining));
-                dirResolved = false; dirProbing = false; dirProbeCooldown = 0;   // 新段：重新判定一次
+                // 方向判定挂在"导航启动"上，不在这里重置
             }
 
             // ② 物理位移核减（带符号）
@@ -735,7 +737,18 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 return;
             }
 
-            // ★ 前进方向：每段只判定一次（dirResolved=true 之后不再计算）
+            // ★ 前进方向：虚拟车每启动一次导航，判定一次（目标变化即为启动）
+            if (nav.destination != lastNavDest) {
+                lastNavDest = nav.destination;      // 虚拟车启动一次导航
+                dirResolved = false; dirProbing = false; dirProbeCooldown = 0;
+            }
+            // 过一次信号机 → 重新判定一次（distanceToSignal 被重置变大即为跨过）
+            double dSigNow = nav.distanceToSignal;
+            if (lastSignalDist >= 0 && dSigNow > lastSignalDist + 1.0) {
+                dirResolved = false; dirProbing = false; dirProbeCooldown = 0;
+                HexieTrain.LOGGER.info("[HexieTrain][dir] 过信号机（dSignal {} → {}）→ 重新判定方向", String.format("%.1f", lastSignalDist), String.format("%.1f", dSigNow));
+            }
+            lastSignalDist = dSigNow;
             try {
                 if (!dirResolved) {
                     double want = nav.destinationBehindTrain ? -1.0 : 1.0;
