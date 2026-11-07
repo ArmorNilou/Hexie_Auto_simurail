@@ -310,6 +310,20 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
      * TP 锚定：把虚拟列车每节车厢的前后点，直接写到物理转向架当前的轨道点。
      * 照 CRH-HeXie 的 CreateTrainBridge.copy() 语义——绝对覆盖，不靠积分。
      */
+    /** 虚拟车头与物理转向架的世界距离（用来判断是否需要纠偏）。 */
+    public static double anchorError(ServerLevel level, BlockPos center, Train train) {
+        try {
+            if (train == null || train.carriages.isEmpty()) return 0;
+            var first = lastFront;
+            if (first == null || first.isRemoved()) return 0;
+            var phys = first.getAxle(true).getTrackPoint();
+            if (phys == null) return 0;
+            var virt = train.carriages.getFirst().getLeadingPoint().getPosition(null);
+            return phys.getPosition(null).distanceTo(virt);
+        } catch (Throwable t) { return 0; }
+    }
+
+    private static PhysicsBogeyBlockEntity lastFront;   // 上次锚定用的前转向架（供误差检查，避免每 tick 扫描）
     public static void reanchor(Train train, ServerLevel level, BlockPos center) {
         try {
             if (train == null || train.carriages.isEmpty()) return;
@@ -326,6 +340,7 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
                 Carriage car = train.carriages.get(i);
                 PhysicsBogeyBlockEntity front = all.get(Math.min(all.size() - 1, i * 2));
                 PhysicsBogeyBlockEntity back  = all.get(Math.min(all.size() - 1, i * 2 + 1));
+                lastFront = front;
                 var fp = front.getAxle(true).getTrackPoint();
                 var bp = back.getAxle(false).getTrackPoint();
                 // 顺序修正：不按坐标扫描顺序，按"离虚拟车当前车头/车尾谁更近"来定前后
