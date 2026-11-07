@@ -739,7 +739,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             double vNow = Math.abs(measuredSpeedMps());
             double moved = (nav.destinationBehindTrain ? -1.0 : 1.0) * vNow / 20.0;   // 用驾驶意图定符号，不用不可靠的切线投影
             legRemaining = Math.max(0.0, legRemaining - moved);
-            nav.distanceToDestination = legRemaining;
+            // 不回写 nav.distanceToDestination：那是 Create 自己的账，回写会互相污染（刹车用 legRemaining 即可）
             double v = Math.abs(measuredSpeedMps());
 
             // ③ 停站锁：只有物理车真在站台旁（<=10m，和谐 StationStopControl 的到站窗口）才保持；
