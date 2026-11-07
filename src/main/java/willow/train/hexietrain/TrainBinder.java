@@ -324,38 +324,48 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
     }
 
     private static PhysicsBogeyBlockEntity lastFront;   // 上次锚定用的前转向架（供误差检查，避免每 tick 扫描）
+    /**
+     * 只认第一个转向架：整列车的点都由它的轨道点推出。
+     * 第一节：leading = 该点；trailing = leading 沿同一条边后退 carriage.spacing。
+     * 多节：后续车厢同样按 spacing 依次后退（同一条边上），保证永远贴轨。
+     */
     public static void reanchor(Train train, ServerLevel level, BlockPos center) {
         try {
             if (train == null || train.carriages.isEmpty()) return;
-            java.util.List<PhysicsBogeyBlockEntity> all = new java.util.ArrayList<>();
+            PhysicsBogeyBlockEntity first = null;
             BlockPos.MutableBlockPos cur = new BlockPos.MutableBlockPos();
+            outer:
             for (int dx = -SCAN_H; dx <= SCAN_H; dx++)
                 for (int dy = -SCAN_V; dy <= SCAN_V; dy++)
                     for (int dz = -SCAN_H; dz <= SCAN_H; dz++) {
                         cur.set(center.getX() + dx, center.getY() + dy, center.getZ() + dz);
-                        if (level.getBlockEntity(cur) instanceof PhysicsBogeyBlockEntity bg) all.add(bg);
+                        if (level.getBlockEntity(cur) instanceof PhysicsBogeyBlockEntity bg) { first = bg; break outer; }
                     }
-            if (all.isEmpty()) return;
+            if (first == null) return;
+            var fp = first.getAxle(true).getTrackPoint();
+            if (fp == null || fp.edge == null) return;
+            double len = fp.edge.getLength();
+            // 该点统一到边自身方向后的 position
+            double p = (fp.node1 != fp.edge.node1) ? Math.max(0.0, len - fp.position) : fp.position;
             for (int i = 0; i < train.carriages.size(); i++) {
                 Carriage car = train.carriages.get(i);
-                PhysicsBogeyBlockEntity front = all.get(Math.min(all.size() - 1, i * 2));
-                PhysicsBogeyBlockEntity back  = all.get(Math.min(all.size() - 1, i * 2 + 1));
-                lastFront = front;
-                var fp = front.getAxle(true).getTrackPoint();
-                var bp = back.getAxle(false).getTrackPoint();
-                // 顺序修正：不按坐标扫描顺序，按"离虚拟车当前车头/车尾谁更近"来定前后
-                if (fp != null && bp != null) {
-                    try {
-                        var leadW = car.getLeadingPoint().getPosition(null);
-                        double dFp = fp.getPosition(null).distanceToSqr(leadW);
-                        double dBp = bp.getPosition(null).distanceToSqr(leadW);
-                        if (dBp < dFp) { var tmp = fp; fp = bp; bp = tmp; }   // 后轴的点更靠车头 → 交换
-                    } catch (Throwable ignored) {}
-                }
-                if (fp != null) syncPoint(fp, car.getLeadingPoint());
-                if (bp != null) syncPoint(bp, car.getTrailingPoint());
+                double space = car.bogeySpacing;   // Create 自己的车厢轴距（int）
+                double leadP = p - i * 2 * space;
+                setPoint(car.getLeadingPoint(), fp, leadP, len);
+                setPoint(car.getTrailingPoint(), fp, leadP - space, len);
             }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][anchor] {}", t.toString()); }
+    }
+
+    /** 把点写到底边上的指定位置（夹在 0..len）。 */
+    private static void setPoint(TravellingPoint dst, TravellingPoint src, double pos, double len) {
+        if (dst == null) return;
+        dst.edge = src.edge;
+        dst.node1 = src.edge.node1;
+        dst.node2 = src.edge.node2;
+        dst.position = Math.max(0.0, Math.min(len, pos));
+        dst.upsideDown = src.upsideDown;
+        dst.blocked = false;
     }
 
 
