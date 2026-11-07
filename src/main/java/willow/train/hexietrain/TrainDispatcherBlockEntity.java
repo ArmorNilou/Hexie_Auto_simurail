@@ -155,7 +155,13 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private boolean isOwner() {
         if (boundTrain == null) return false;
         TrainDispatcherBlockEntity o = TRAIN_OWNER.putIfAbsent(boundTrain, this);
-        return o == null || o == this;
+        if (o == null || o == this) return true;
+        // 自愈：旧实例已失效（被移除 / 无世界 / 换了维度 / 不同坐标）→ 由当前实例接管
+        if (o.isRemoved() || o.getLevel() == null || o.getLevel() != level || !o.worldPosition.equals(worldPosition)) {
+            TRAIN_OWNER.put(boundTrain, this);
+            return true;
+        }
+        return false;
     }
 
     public static Set<TrainDispatcherBlockEntity> activeDispatchers() {
@@ -925,6 +931,7 @@ if (docking) { forceAttach(train); HexieTrain.LOGGER.info("[dock] 新目标 {} �
     public void remove() {
         // 只有"方块真的不在了"才抹除：区块卸载/走远不得清绑定
         try { if (boundTrain != null && worldPosition.equals(TrainBinder.TRAIN_DISPATCHERS.get(boundTrain))) TrainBinder.TRAIN_DISPATCHERS.remove(boundTrain); } catch (Throwable ignored) {}   // 方块没了：撤销登记
+        try { if (boundTrain != null && TRAIN_OWNER.get(boundTrain) == this) TRAIN_OWNER.remove(boundTrain); } catch (Throwable ignored) {}   // 实例销毁：撤销 owner 登记
         boolean blockGone = level != null && !level.getBlockState(worldPosition).is(getBlockState().getBlock());
         boolean unloading = false;
         try { unloading = isChunkUnloaded(); } catch (Throwable ignored) {}
