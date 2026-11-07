@@ -375,6 +375,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     // ══════════════════════ 驾驶模式 ══════════════════════
 
     /** 物理车沿轨位移（格/tick，带符号），供速度注入 mixin 使用。 */
+    /** 需求 8：解耦期间不注入速度，让 Create 自己驱动虚拟车进站。 */
+    public boolean shouldInjectSpeed() { return !docking; }
     public double physicalSpeedPerTick() { try { return bodySpeedAlongTrackBps() / 20.0; } catch (Throwable t) { return 0.0; } }
     public boolean manualMode() {
         return manualMode;
@@ -551,9 +553,27 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                 return;
             }
 
+            // 需求 8：进站解耦状态机
+            try {
+                var navM = train.navigation;
+                GlobalStation stM = navM == null ? null : navM.destination;
+                if (manualMode || isUnbound()) {
+                    if (docking) { docking = false; HexieTrain.LOGGER.info("[dock] 手操/未绑定 → 立即合体"); }
+                } else if (stM != null && stM != lastStation) {
+                    if (docking) { docking = false; HexieTrain.LOGGER.info("[dock] 新目标 {} → 合体", stM.name); }
+                    lastStation = stM;
+                } else if (!docking && stM != null) {
+                    double dNow = 0;
+                    try { dNow = physicalDistanceTo(stM); } catch (Throwable ignored) {}
+                    if (dNow <= 10.0) {   // 到站窗口（和谐 StationStopControl）→ 分开，各自进站
+                        docking = true;
+                        HexieTrain.LOGGER.info("[dock] 进站解耦：物理距站 {} → 物理车自理，虚拟车自己进站", String.format("%.1f", dNow));
+                    }
+                }
+            } catch (Throwable ignored) {}
             driveToStation(train);
             // TP 锚定：把虚拟车厢的点直接摆到物理转向架位置（每 tick，绝对覆盖）
-            if (level instanceof ServerLevel slA) TrainBinder.reanchor(train, slA, worldPosition);
+            if (!docking && level instanceof ServerLevel slA) TrainBinder.reanchor(train, slA, worldPosition);   // 需求 8：解耦期间不锚定
             // 四态赋值：待命 / 行驶中 / 滑车 / 急刹
             try {
                 if (train.navigation.destination == null) {
