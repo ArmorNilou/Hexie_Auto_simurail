@@ -726,19 +726,26 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             }
             GlobalStation st = nav.destination;
 
-            // 到站保持：只有【物理车也到了站台】才满刹锁死；否则继续把车开过去
+            // 到站保持：虚拟车已到站 → 物理车必须朝站台收敛并停住，绝不按空的导航目标乱跑
             try {
                 boolean arrived = train.getCurrentStation() != null
                         || train.runtime.state != com.simibubi.create.content.trains.schedule.ScheduleRuntime.State.IN_TRANSIT;
                 if (arrived) {
                     double dPh = 0;
                     try { dPh = physicalDistanceTo(st); } catch (Throwable ignored) {}
-                    if (dPh <= 3.0) {                 // 物理车确实停在站台旁
+                    if (dPh <= 3.0) {                        // 已在站台：满刹停住
                         SetOutputBrake(15);
                         setAutoDirection(0f);
                         return;
                     }
-                    // 虚拟车到了但物理车还没到 → 不锁，继续走下面的牵引/刹车逻辑
+                    // 还没到站台：按"到站台的距离"刹车，方向沿用上一 tick（不重新按导航算）
+                    double vNowP = Math.abs(measuredSpeedMps());
+                    double vAllowP = Math.sqrt(2.0 * BRAKE_DECEL * Math.max(0.0, dPh - 1.5));
+                    int brP = vNowP > vAllowP
+                            ? (int) Math.round(15.0 * Math.min(1.0, (vNowP - vAllowP) / Math.max(vNowP, 1.0E-3))) : 0;
+                    SetOutputBrake(brP);
+                    if (Math.abs(autoDirection) > 1.0E-4f) setAutoDirection(autoDirection);   // 保持原方向蹭到站台
+                    return;
                 }
             } catch (Throwable ignored) {}
 
