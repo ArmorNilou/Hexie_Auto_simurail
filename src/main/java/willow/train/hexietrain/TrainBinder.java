@@ -328,13 +328,41 @@ public static Result bind(ServerLevel level, BlockPos dispatcherPos, ItemStack s
                 PhysicsBogeyBlockEntity back  = all.get(Math.min(all.size() - 1, i * 2 + 1));
                 var fp = front.getAxle(true).getTrackPoint();
                 var bp = back.getAxle(false).getTrackPoint();
-                if (fp != null) copyInto(fp, car.getLeadingPoint());
-                if (bp != null) copyInto(bp, car.getTrailingPoint());
+                if (fp != null) syncPoint(level, front, car.getLeadingPoint());
+                if (bp != null) syncPoint(level, back, car.getTrailingPoint());
             }
         } catch (Throwable t) { HexieTrain.LOGGER.warn("[HexieTrain][anchor] {}", t.toString()); }
     }
 
     /** 绝对写入：node1/node2/edge/position 全量覆盖（同 CRH-HeXie 的 copy）。 */
+    /**
+     * 学和谐：不搬物理点的 edge/node 顺序，只把物理转向架的世界位置
+     * 投影到虚拟点【自己所在的边】上，算出一个 position 写回去。
+     * 这样点永远在自己的轨道上（不会脱轨），且每 tick 与物理车对齐。
+     */
+    private static void syncPoint(ServerLevel level, PhysicsBogeyBlockEntity bogey, TravellingPoint dst) {
+        if (dst == null || dst.edge == null || bogey == null) return;
+        try {
+            net.minecraft.world.phys.Vec3 world = willow.train.hexietrain.SubLevelSuspend
+                    .worldCenter(level, bogey.getBlockPos());
+            if (world == null) return;
+            com.simibubi.create.content.trains.graph.TrackEdge edge = dst.edge;
+            int samples = 64;
+            double bestT = -1.0;
+            double bestD = Double.MAX_VALUE;
+            for (int i = 0; i <= samples; i++) {
+                double t = i / (double) samples;
+                net.minecraft.world.phys.Vec3 p = edge.getPosition(null, t);
+                double d = p.distanceToSqr(world);
+                if (d < bestD) { bestD = d; bestT = t; }
+            }
+            if (bestT < 0) return;
+            double len = edge.getLength();
+            boolean sameOrder = dst.node1 == edge.node1;
+            dst.position = sameOrder ? bestT * len : (1.0 - bestT) * len;
+        } catch (Throwable ignored) {}
+    }
+
     private static void copyInto(TravellingPoint src, TravellingPoint dst) {
         if (dst == null) return;
         dst.node1 = src.node1;
