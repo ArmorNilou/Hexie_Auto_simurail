@@ -147,7 +147,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     private GlobalStation lastStation = null;   // 上一个导航目标站（目标清空后仍可用于量距离）
     private int dockTicks = 0;
     private double lastDDest = -1;        // 上一次的到站距离，用来判断"是否在靠近站台"
-    private int dDestTrendTicks = 0;       // 每 20 tick 核对一次"是否在靠近站台"
+    private boolean dirCheckPending = false;   // 过信号机时置位，下一 tick 看一眼
     private boolean dirResolved = false;     // 本段方向是否已判定（判完不再计算）
     private boolean dirProbing = false;      // 是否正在做 1tick 传动探针
     private int dirProbeTicks = 0;
@@ -400,7 +400,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
     /** 由 mixin 在"跨过边点/信号机"时回调：只在这里允许重新判定方向。 */
     public void onEdgePointCrossed() {
-        dirResolved = false;
+        dirCheckPending = true;   // 过一个信号机：看一眼方向
         dirProbing = false;
         dirProbeCooldown = 0;
     }
@@ -804,16 +804,19 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             }
 
 
-            // ★ 前进方向：每 20 tick 核对一次"到站距离是否在减小"，偏离就交换输出侧（不是每 tick）
-            if (++dDestTrendTicks % 20 == 0) {
+            // 前进方向：只在过一次信号机时看一眼（事件触发）
+            if (dirCheckPending) {
+                dirCheckPending = false;
                 try {
                     double dNow = nav.distanceToDestination;
                     double vNowT = Math.abs(measuredSpeedMps());
                     if (lastDDest >= 0 && vNowT > 0.5 && dNow > lastDDest + 1.0) {
-                        // 在动，但离站台更远 → 方向反了
                         leftIsForward = !(leftIsForward == null ? true : leftIsForward);
-                        HexieTrain.LOGGER.info("[HexieTrain][dir] 距站 {} → {}（在远离）→ 交换输出侧={}",
+                        HexieTrain.LOGGER.info("[HexieTrain][dir] 过信号机：距站 {} → {}（在远离）→ 交换输出侧={}",
                                 String.format("%.1f", lastDDest), String.format("%.1f", dNow), leftIsForward);
+                    } else {
+                        HexieTrain.LOGGER.info("[HexieTrain][dir] 过信号机：距站 {} → {}（在接近）→ 方向保持",
+                                String.format("%.1f", lastDDest), String.format("%.1f", dNow));
                     }
                     lastDDest = dNow;
                 } catch (Throwable ignored) {}
