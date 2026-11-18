@@ -1,4 +1,12 @@
-﻿build/
+build/
 .gradle/
 .tools/
 *.log
+
+# 编辑过程中的临时备份，不入库
+*.bak*
+_backup/
+历史版本/改前备份-*/
+
+# 他人的模组二进制（本机编译依赖，不随仓库分发）
+libs/hexie-*.jar

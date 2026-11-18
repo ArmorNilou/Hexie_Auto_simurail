@@ -28,6 +28,8 @@ dependencies {
     compileOnly files("${instDir}/${instName}.jar")
     // jarJar deps extracted from Create (Flywheel / Ponder / Registrate)
     compileOnly fileTree(dir: 'libs', include: ['*.jar'])
+    // 和谐 0.9.0（提供 CreateRouteBinding / CreateSignalAspects；本模组是它的附属）
+    compileOnly files('libs/hexie-0.9.0.jar')
     // target mods
     compileOnly fileTree(dir: modsDir, include: [
         '*create-1.21.1*.jar',
@@ -57,7 +59,7 @@ jar {
 
 // ---- 发布：按固定命名规则复制到「历史版本」目录 ----
 def releaseDirName = "\u5386\u53F2\u7248\u672C"
-def releaseFileName = "[\u548C\u8C10\uFF1A\u6A21\u62DF\u81EA\u52A8\u94C1\u8DEF]Hexie_AutoSimulateTrain${mod_version}.jar"
+def releaseFileName = "[\u548C\u8C10\uFF1A\u683C\u81F4\u8DEF\u7531]Hexie_Auto_simuroute${mod_version}.jar"
 
 tasks.register('releaseJar', Copy) {
     dependsOn tasks.named('jar')
@@ -68,4 +70,13 @@ tasks.register('releaseJar', Copy) {
 
 tasks.named('build') {
     finalizedBy tasks.named('releaseJar')
+}
+
+// ---- 资源处理：把 gradle.properties 的 mod_version 注入 mods.toml ----
+// 之前 mods.toml 里写死 0.7.0，jar 名却是 0.55.0，装的到底是哪个版本看不出来。
+tasks.named('processResources') {
+    inputs.property 'mod_version', mod_version
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand(mod_version: mod_version)
+    }
 }

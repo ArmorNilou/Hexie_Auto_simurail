@@ -1,5 +1,6 @@
 package willow.train.hexietrain;
 
+import com.simibubi.create.AllItems;
 import com.simibubi.create.content.kinetics.RotationPropagator;
 import com.simibubi.create.content.kinetics.base.DirectionalAxisKineticBlock;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
@@ -7,6 +8,7 @@ import com.simibubi.create.content.kinetics.base.RotatedPillarKineticBlock;
 import com.simibubi.create.foundation.block.IBE;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.Direction.Axis;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.InteractionResult;
@@ -18,208 +20,219 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.block.state.StateDefinition;
+import net.minecraft.world.level.block.state.BlockBehaviour.Properties;
+import net.minecraft.world.level.block.state.StateDefinition.Builder;
 import net.minecraft.world.level.block.state.properties.BooleanProperty;
+import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.ticks.TickPriority;
 import net.neoforged.neoforge.common.extensions.IPlayerExtension;
 
-/**
- * 物理火车调度器。
- *
- * <p>传动部分完全照抄 simulated 的 DirectionalGearshiftBlock，不做任何自创。
- */
-public class TrainDispatcherBlock extends DirectionalAxisKineticBlock
-        implements IBE<TrainDispatcherBlockEntity> {
+public class TrainDispatcherBlock extends DirectionalAxisKineticBlock implements IBE<TrainDispatcherBlockEntity> {
+   /** 自动驱动接管面状态的方块位置集合（按方块区分，避免多台调度器串台） */
+   private static final java.util.Set<BlockPos> DRIVE_OVERRIDE_POS = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
-    public static final BooleanProperty LEFT_POWERED = BooleanProperty.create("left_powered");
-    public static final BooleanProperty RIGHT_POWERED = BooleanProperty.create("right_powered");
+   public static void setDriveOverride(BlockPos pos, boolean on) {
+      if (pos == null) return;
+      if (on) DRIVE_OVERRIDE_POS.add(pos.immutable()); else DRIVE_OVERRIDE_POS.remove(pos);
+   }
 
-    public TrainDispatcherBlock(Properties properties) {
-        super(properties);
-        registerDefaultState(defaultBlockState()
-                .setValue(LEFT_POWERED, false)
-                .setValue(RIGHT_POWERED, false));
-    }
+   public static boolean driveOverride(BlockPos pos) { return pos != null && DRIVE_OVERRIDE_POS.contains(pos); }
+   /**
+    * 面的命名，2026-11-17 01:36 实测定死，别再改：
+    *
+    * <pre>
+    *   getCounterClockwiseDirection(state) = FACING 本身                     那一面 → 叫"逆时针"（原 left）
+    *   getClockwiseDirection(state)        = FACING.getOpposite()（相对面）  那一面 → 叫"顺时针"（原 right）
+    * </pre>
+    *
+    * 依据：[probe] 里 bsL=true / bsR=false，现场在换向器上激活的正是这一面，用户指定称它为"逆时针"。
+    *
+    * <p><b>注意</b>：blockstate 的属性字符串仍然是 "left_powered" / "right_powered" —— 那是存档里的
+    * 键名，改了会让老存档的方块状态失配。所以只改 Java 标识符，字符串保持不动。
+    *
+    * <p>这两个 boolean 是**驱动面**（换向器接哪一面）的状态，不是红石输入，也不发红石。
+    * 道岔转向**已经不是**红石了：逐转向架由 BogeySteering 直接写 Simurail 遥控值（0.62.0 起）。
+    */
+   public static final BooleanProperty COUNTERCLOCKWISE_POWERED = BooleanProperty.create("left_powered");
+   public static final BooleanProperty CLOCKWISE_POWERED = BooleanProperty.create("right_powered");
 
-    /** 照抄参考实现。 */
-    @Override
-    protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> builder) {
-        builder.add(LEFT_POWERED);
-        builder.add(RIGHT_POWERED);
-        super.createBlockStateDefinition(builder);
-    }
+   public TrainDispatcherBlock(Properties properties) {
+      super(properties);
+      this.registerDefaultState((BlockState)((BlockState)this.defaultBlockState().setValue(COUNTERCLOCKWISE_POWERED, false)).setValue(CLOCKWISE_POWERED, false));
+   }
 
-    /** 照抄参考实现。 */
-    @Override
-    public BlockState getStateForPlacement(BlockPlaceContext context) {
-        Direction nearest = context.getNearestLookingDirection();
-        boolean shift = context.getPlayer() != null && context.getPlayer().isShiftKeyDown();
-        Direction.Axis preferredAxis = RotatedPillarKineticBlock.getPreferredAxis(context);
+   protected void createBlockStateDefinition(Builder<Block, BlockState> builder) {
+      builder.add(new Property[]{COUNTERCLOCKWISE_POWERED});
+      builder.add(new Property[]{CLOCKWISE_POWERED});
+      super.createBlockStateDefinition(builder);
+   }
 
-        boolean axisAlongFirst = false;
-        Direction facing;
+   public BlockState getStateForPlacement(BlockPlaceContext context) {
+      Direction nearest = context.getNearestLookingDirection();
+      boolean shift = context.getPlayer() != null && context.getPlayer().isShiftKeyDown();
+      Axis preferredAxis = RotatedPillarKineticBlock.getPreferredAxis(context);
+      boolean axisAlongFirst = false;
+      Direction facing;
+      if (preferredAxis != null && preferredAxis != nearest.getAxis() && !shift) {
+         facing = nearest;
+         if (preferredAxis == Axis.X) {
+            axisAlongFirst = true;
+         } else if (preferredAxis == Axis.Y && nearest.getAxis() == Axis.X) {
+            axisAlongFirst = true;
+         }
+      } else if (nearest.getAxis().isHorizontal()) {
+         facing = nearest.getCounterClockWise();
+         if (nearest.getAxis() == Axis.X) {
+            axisAlongFirst = true;
+         }
+      } else {
+         Direction horizontal = context.getHorizontalDirection();
+         facing = horizontal.getCounterClockWise();
+         if (horizontal.getAxis() == Axis.Z) {
+            axisAlongFirst = true;
+         }
+      }
 
-        if (preferredAxis != null && preferredAxis != nearest.getAxis() && !shift) {
-            facing = nearest;
-            if (preferredAxis == Direction.Axis.X) {
-                axisAlongFirst = true;
-            } else if (preferredAxis == Direction.Axis.Y && nearest.getAxis() == Direction.Axis.X) {
-                axisAlongFirst = true;
+      if (shift) {
+         facing = facing.getOpposite();
+      }
+
+      BlockState state = (BlockState)((BlockState)this.defaultBlockState().setValue(FACING, facing)).setValue(AXIS_ALONG_FIRST_COORDINATE, axisAlongFirst);
+      return this.getPoweredState(context.getLevel(), state, context.getClickedPos());
+   }
+
+   public Direction getCounterClockwiseDirection(BlockState state) {
+      return (Direction)state.getValue(FACING);
+   }
+
+   public Direction getClockwiseDirection(BlockState state) {
+      return this.getCounterClockwiseDirection(state).getOpposite();
+   }
+
+   public BlockState getPoweredState(Level level, BlockState state, BlockPos pos) {
+      if (driveOverride(pos)) {
+         return state;
+      } else {
+         Direction ccw = this.getCounterClockwiseDirection(state);
+         Direction cw = this.getClockwiseDirection(state);
+          BlockPos lp = pos.relative(ccw);
+          BlockPos rp = pos.relative(cw);
+          // 邻居方块在未加载区块时绝不能让 level 去加载（C2ME 下 getChunk 的 join() 会把服务器
+          // 线程等死，2026-11-17 01:14 进不去世界就是这一类）。判不了就保持现状，不猜。
+          if (!level.hasChunkAt(lp) || !level.hasChunkAt(rp)) {
+             return state;
+          }
+          int counterClockwiseSignal = level.getSignal(lp, ccw);
+          int clockwiseSignal = level.getSignal(rp, cw);
+         return (BlockState)((BlockState)state.setValue(COUNTERCLOCKWISE_POWERED, counterClockwiseSignal > 0)).setValue(CLOCKWISE_POWERED, clockwiseSignal > 0);
+      }
+   }
+
+   public void neighborChanged(BlockState state, Level level, BlockPos pos, Block neighborBlock, BlockPos neighborPos, boolean movedByPiston) {
+      if (!level.isClientSide) {
+         if (level.getBlockEntity(pos) instanceof TrainDispatcherBlockEntity be) {
+            // 必须走和 getPoweredState 同一套定义（FACING 及其相对面），否则红石读的是另外两面；
+            // 而且 FACING 竖直时 getClockWise() 会抛异常。
+            Direction toCcw = this.getCounterClockwiseDirection(state);
+            Direction toCw = this.getClockwiseDirection(state);
+            BlockPos lp2 = pos.relative(toCcw);
+            BlockPos rp2 = pos.relative(toCw);
+            // 邻居未加载就不读：level.getSignal 会强制加载区块，C2ME 下 join() 等自己会挂死
+            if (level.hasChunkAt(lp2) && level.hasChunkAt(rp2)) {
+               be.updateExternalInput(level.getSignal(lp2, toCcw), level.getSignal(rp2, toCw));
             }
-        } else if (nearest.getAxis().isHorizontal()) {
-            facing = nearest.getCounterClockWise();
-            if (nearest.getAxis() == Direction.Axis.X) {
-                axisAlongFirst = true;
-            }
-        } else {
-            Direction horizontal = context.getHorizontalDirection();
-            facing = horizontal.getCounterClockWise();
-            if (horizontal.getAxis() == Direction.Axis.Z) {
-                axisAlongFirst = true;
-            }
-        }
+         }
 
-        if (shift) {
-            facing = facing.getOpposite();
-        }
-
-        BlockState state = defaultBlockState()
-                .setValue(FACING, facing)
-                .setValue(AXIS_ALONG_FIRST_COORDINATE, axisAlongFirst);
-        return getPoweredState(context.getLevel(), state, context.getClickedPos());
-    }
-
-    /** 照抄参考实现。 */
-    public Direction getLeftDirection(BlockState state) {
-        return state.getValue(FACING);
-    }
-
-    /** 照抄参考实现。 */
-    public Direction getRightDirection(BlockState state) {
-        return getLeftDirection(state).getOpposite();
-    }
-
-    /** 照抄参考实现。 */
-    public BlockState getPoweredState(Level level, BlockState state, BlockPos pos) {
-        Direction left = getLeftDirection(state);
-        Direction right = getRightDirection(state);
-        int leftSignal = level.getSignal(pos.relative(left), left);
-        int rightSignal = level.getSignal(pos.relative(right), right);
-        return state.setValue(LEFT_POWERED, leftSignal > 0)
-                    .setValue(RIGHT_POWERED, rightSignal > 0);
-    }
-
-    /** 照抄参考实现。 */
-    @Override
-    public void neighborChanged(BlockState state, Level level, BlockPos pos, Block neighborBlock,
-                                BlockPos neighborPos, boolean movedByPiston) {
-        if (level.isClientSide) return;
-
-        if (level.getBlockEntity(pos) instanceof willow.train.hexietrain.TrainDispatcherBlockEntity be) {
-            Direction toLeft = state.getValue(FACING).getCounterClockWise();
-            Direction toRight = state.getValue(FACING).getClockWise();
-            be.updateExternalInput(level.getSignal(pos.relative(toLeft), toLeft), level.getSignal(pos.relative(toRight), toRight));
-        }
-        boolean wasLeft = state.getValue(LEFT_POWERED);
-        boolean wasRight = state.getValue(RIGHT_POWERED);
-        BlockState newState = getPoweredState(level, state, pos);
-
-        if (wasLeft != newState.getValue(LEFT_POWERED)
-                || wasRight != newState.getValue(RIGHT_POWERED)) {
+         boolean wasCcw = (Boolean)state.getValue(COUNTERCLOCKWISE_POWERED);
+         boolean wasCw = (Boolean)state.getValue(CLOCKWISE_POWERED);
+         BlockState newState = this.getPoweredState(level, state, pos);
+         if (wasCcw != (Boolean)newState.getValue(COUNTERCLOCKWISE_POWERED) || wasCw != (Boolean)newState.getValue(CLOCKWISE_POWERED)) {
             level.setBlock(pos, newState, 3);
-            detachKinetics(level, pos, true);
-        }
-    }
+            this.detachKinetics(level, pos, true);
+         }
+      }
+   }
 
+   public void tick(BlockState state, ServerLevel level, BlockPos pos, RandomSource random) {
+      if (level.getBlockEntity(pos) instanceof KineticBlockEntity kbe) {
+         RotationPropagator.handleAdded(level, pos, kbe);
+      }
+   }
 
-    /** 照抄参考实现。 */
-    @Override
-    public void tick(BlockState state, ServerLevel level, BlockPos pos, RandomSource random) {
-        if (!(level.getBlockEntity(pos) instanceof KineticBlockEntity kbe)) return;
-        RotationPropagator.handleAdded(level, pos, kbe);
-    }
+   public InteractionResult onWrenched(BlockState state, UseOnContext context) {
+      InteractionResult result = super.onWrenched(state, context);
+      if (result.consumesAction() && !context.getLevel().isClientSide) {
+         this.detachKinetics(context.getLevel(), context.getClickedPos(), true);
+      }
 
-    /** 照抄参考实现。 */
-    @Override
-    public InteractionResult onWrenched(BlockState state, UseOnContext context) {
-        InteractionResult result = super.onWrenched(state, context);
-        if (result.consumesAction() && !context.getLevel().isClientSide) {
-            detachKinetics(context.getLevel(), context.getClickedPos(), true);
-        }
-        return result;
-    }
+      return result;
+   }
 
-    @Override
-    public InteractionResult onSneakWrenched(BlockState state, UseOnContext context) {
-        Level level = context.getLevel();
-        if (!level.isClientSide) {
-            level.destroyBlock(context.getClickedPos(), true, context.getPlayer());
-        }
-        return InteractionResult.SUCCESS;
-    }
+   public InteractionResult onSneakWrenched(BlockState state, UseOnContext context) {
+      Level level = context.getLevel();
+      if (!level.isClientSide) {
+         level.destroyBlock(context.getClickedPos(), true, context.getPlayer());
+      }
 
-    @Override
-    public InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos,
-                                            Player player, BlockHitResult hit) {
-        if (com.simibubi.create.AllItems.WRENCH.isIn(player.getMainHandItem())
-                || com.simibubi.create.AllItems.WRENCH.isIn(player.getOffhandItem())) {
-            return InteractionResult.PASS;
-        }
-        if (!level.isClientSide && level.getBlockEntity(pos) instanceof TrainDispatcherBlockEntity be) {
+      return InteractionResult.SUCCESS;
+   }
+
+   public InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player, BlockHitResult hit) {
+      if (!AllItems.WRENCH.isIn(player.getMainHandItem()) && !AllItems.WRENCH.isIn(player.getOffhandItem())) {
+         if (!level.isClientSide && level.getBlockEntity(pos) instanceof TrainDispatcherBlockEntity be) {
             if (player instanceof IPlayerExtension ext) {
-                ext.openMenu(be, pos);
+               ext.openMenu(be, pos);
             } else {
-                player.openMenu(be);
+               player.openMenu(be);
             }
-        }
-        return InteractionResult.sidedSuccess(level.isClientSide);
-    }
+         }
 
-    @Override
-    public BlockState playerWillDestroy(Level level, BlockPos pos, BlockState state, Player player) {
-        try {
-            if (!level.isClientSide && level.getBlockEntity(pos) instanceof TrainDispatcherBlockEntity be) {
-                be.dissolve();
-                for (int i = 0; i < TrainDispatcherContainer.SIZE; i++) {
-                    ItemStack stack = be.slot(i);
-                    if (stack.isEmpty()) continue;
-                    net.minecraft.world.Containers.dropItemStack(level,
-                            pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5, stack.copy());
-                    be.setSlot(i, ItemStack.EMPTY);
-                }
-                HexieTrain.LOGGER.info("[HexieTrain] 调度台被破坏 @{}，内容物已掉落", pos);
+         return InteractionResult.sidedSuccess(level.isClientSide);
+      } else {
+         return InteractionResult.PASS;
+      }
+   }
+
+   public BlockState playerWillDestroy(Level level, BlockPos pos, BlockState state, Player player) {
+      try {
+         if (!level.isClientSide && level.getBlockEntity(pos) instanceof TrainDispatcherBlockEntity be) {
+            try {
+               be.forgetRecordOnBreak();
+            } catch (Throwable var7) {
             }
-        } catch (Throwable t) {
-            HexieTrain.LOGGER.error("[HexieTrain] 破坏回调异常（已忽略，保证方块能被拆掉）", t);
-        }
-        return super.playerWillDestroy(level, pos, state, player);
-    }
 
-    @Override
-    public Class<TrainDispatcherBlockEntity> getBlockEntityClass() {
-        return TrainDispatcherBlockEntity.class;
-    }
+            be.dropRebuiltSchedule();
+            be.dissolve();
 
-    @Override
-    public BlockEntityType<? extends TrainDispatcherBlockEntity> getBlockEntityType() {
-        return HexieRegistries.TRAIN_DISPATCHER_BE.get();
-    }
+            for (int i = 1; i < TrainDispatcherContainer.SIZE; i++) {
+               be.setSlot(i, ItemStack.EMPTY);
+            }
 
-    /**
-     * 强制 Create 重新求值本方块所在的动力网络。
-     *
-     * <p>用 KineticBlockEntity 自己的 detachKinetics/attachKinetics（Create 内部同款做法），
-     * 同步完成，不依赖 scheduleTick —— 定时 tick 万一没跑，方块会永远停在"已摘除"状态，
-     * 下游就会保持旧转速（表现就是"恒定输出"）。
-     */
-    public void detachKinetics(Level level, BlockPos pos, boolean immediate) {
-        if (!(level.getBlockEntity(pos) instanceof KineticBlockEntity kbe)) return;
-        try {
+            HexieTrain.LOGGER.info("[HexieTrain] 调度台被破坏 @{}，内容物已掉落", pos);
+         }
+      } catch (Throwable var81) {
+         HexieTrain.LOGGER.error("[HexieTrain] 破坏回调异常（已忽略，保证方块能被拆掉）", var81);
+      }
+
+      return super.playerWillDestroy(level, pos, state, player);
+   }
+
+   public Class<TrainDispatcherBlockEntity> getBlockEntityClass() {
+      return TrainDispatcherBlockEntity.class;
+   }
+
+   public BlockEntityType<? extends TrainDispatcherBlockEntity> getBlockEntityType() {
+      return (BlockEntityType<? extends TrainDispatcherBlockEntity>)HexieRegistries.TRAIN_DISPATCHER_BE.get();
+   }
+
+   public void detachKinetics(Level level, BlockPos pos, boolean immediate) {
+      if (level.getBlockEntity(pos) instanceof KineticBlockEntity kbe) {
+         try {
             kbe.detachKinetics();
             kbe.attachKinetics();
-        } catch (Throwable t) {
-            HexieTrain.LOGGER.warn("[HexieTrain][kinetics] 重算失败: {}", t.toString());
-        }
-    }
+         } catch (Throwable var6) {
+            HexieTrain.LOGGER.warn("[HexieTrain][kinetics] 重算失败: {}", var6.toString());
+         }
+      }
+   }
 }

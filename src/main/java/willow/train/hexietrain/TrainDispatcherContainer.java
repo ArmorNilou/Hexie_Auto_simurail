@@ -4,86 +4,96 @@ import net.minecraft.world.Container;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 
-/**
- * 把方块实体的 7 个槽（1 时刻表 + 6 频率）包装成标准 {@link Container}。
- *
- * <p>槽位编号：0 = 时刻表；1~6 = 三个通道各自的"频率1/频率2"。
- */
 public class TrainDispatcherContainer implements Container {
+   public static final int SLOT_SCHEDULE = 0;
+   public static final int SLOT_FREQ_BASE = 1;
+   public static final int SIZE = 1 + TrainDispatcherBlockEntity.FREQ_SLOTS;
+   private final TrainDispatcherBlockEntity be;
 
-    public static final int SLOT_SCHEDULE = 0;
-    public static final int SLOT_FREQ_BASE = 1;
-    public static final int SIZE = 1 + TrainDispatcherBlockEntity.FREQ_SLOTS;
+   public TrainDispatcherContainer(TrainDispatcherBlockEntity be) {
+      this.be = be;
+   }
 
-    private final TrainDispatcherBlockEntity be;
+   public int getContainerSize() {
+      return SIZE;
+   }
 
-    public TrainDispatcherContainer(TrainDispatcherBlockEntity be) {
-        this.be = be;
-    }
+   public boolean isEmpty() {
+      if (!this.be.scheduleSlot().isEmpty()) {
+         return false;
+      } else {
+         for (int i = 0; i < TrainDispatcherBlockEntity.FREQ_SLOTS; i++) {
+            if (!this.be.frequency(i).isEmpty()) {
+               return false;
+            }
+         }
 
-    @Override
-    public int getContainerSize() {
-        return SIZE;
-    }
+         return true;
+      }
+   }
 
-    @Override
-    public boolean isEmpty() {
-        if (!be.scheduleSlot().isEmpty()) return false;
-        for (int i = 0; i < TrainDispatcherBlockEntity.FREQ_SLOTS; i++) {
-            if (!be.frequency(i).isEmpty()) return false;
-        }
-        return true;
-    }
+   public ItemStack getItem(int slot) {
+      return slot == 0 ? this.be.scheduleSlot() : this.be.frequency(slot - 1);
+   }
 
-    @Override
-    public ItemStack getItem(int slot) {
-        if (slot == SLOT_SCHEDULE) return be.scheduleSlot();
-        return be.frequency(slot - SLOT_FREQ_BASE);
-    }
+   public ItemStack removeItem(int slot, int amount) {
+      if (slot == 0) {
+         try {
+            return this.be.takeRebuiltSchedule();
+         } catch (Throwable var5) {
+            return ItemStack.EMPTY;
+         }
+      } else {
+         ItemStack current = this.getItem(slot);
+         if (current.isEmpty()) {
+            return ItemStack.EMPTY;
+         } else {
+            ItemStack taken = current.split(amount);
+            this.setItem(slot, current);
+            return taken;
+         }
+      }
+   }
 
-    @Override
-    public ItemStack removeItem(int slot, int amount) {
-        ItemStack current = getItem(slot);
-        if (current.isEmpty()) return ItemStack.EMPTY;
-        ItemStack taken = current.split(amount);
-        setItem(slot, current);
-        return taken;
-    }
+   public ItemStack removeItemNoUpdate(int slot) {
+      if (slot == 0) {
+         try {
+            return this.be.takeRebuiltSchedule();
+         } catch (Throwable var3) {
+            return ItemStack.EMPTY;
+         }
+      } else {
+         ItemStack current = this.getItem(slot);
+         this.setItem(slot, ItemStack.EMPTY);
+         return current;
+      }
+   }
 
-    @Override
-    public ItemStack removeItemNoUpdate(int slot) {
-        ItemStack current = getItem(slot);
-        setItem(slot, ItemStack.EMPTY);
-        return current;
-    }
+   public void setItem(int slot, ItemStack stack) {
+      if (slot == 0) {
+         this.be.setScheduleSlot(stack);
+      } else {
+         this.be.setFrequency(slot - 1, stack);
+      }
+   }
 
-    @Override
-    public void setItem(int slot, ItemStack stack) {
-        if (slot == SLOT_SCHEDULE) {
-            be.setScheduleSlot(stack);
-        } else {
-            be.setFrequency(slot - SLOT_FREQ_BASE, stack);
-        }
-    }
+   public void setChanged() {
+      this.be.setChanged();
+   }
 
-    @Override
-    public void setChanged() {
-        be.setChanged();
-    }
+   public boolean stillValid(Player player) {
+      return this.be.hasLevel()
+         && player.distanceToSqr(
+               (double)this.be.getBlockPos().getX() + 0.5, (double)this.be.getBlockPos().getY() + 0.5, (double)this.be.getBlockPos().getZ() + 0.5
+            )
+            <= 64.0;
+   }
 
-    @Override
-    public boolean stillValid(Player player) {
-        return be.hasLevel() && player.distanceToSqr(
-                be.getBlockPos().getX() + 0.5,
-                be.getBlockPos().getY() + 0.5,
-                be.getBlockPos().getZ() + 0.5) <= 64.0;
-    }
+   public void clearContent() {
+      this.be.setScheduleSlot(ItemStack.EMPTY);
 
-    @Override
-    public void clearContent() {
-        be.setScheduleSlot(ItemStack.EMPTY);
-        for (int i = 0; i < TrainDispatcherBlockEntity.FREQ_SLOTS; i++) {
-            be.setFrequency(i, ItemStack.EMPTY);
-        }
-    }
+      for (int i = 0; i < TrainDispatcherBlockEntity.FREQ_SLOTS; i++) {
+         this.be.setFrequency(i, ItemStack.EMPTY);
+      }
+   }
 }
