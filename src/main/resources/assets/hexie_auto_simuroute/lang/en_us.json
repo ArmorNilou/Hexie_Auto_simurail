@@ -1,5 +1,5 @@
 {
-  "block.hexietrain.train_dispatcher": "Physical Train Dispatcher",
-  "item.hexietrain.bogey_connector": "Bogie Connector",
-  "itemGroup.hexietrain": "和谐：格致路由"
+  "block.hexie_auto_simuroute.train_dispatcher": "Physical Train Dispatcher",
+  "item.hexie_auto_simuroute.bogey_connector": "Bogie Connector",
+  "itemGroup.hexie_auto_simuroute": "Hexie: Auto Simuroute"
 }

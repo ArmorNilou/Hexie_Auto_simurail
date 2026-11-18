@@ -50,7 +50,7 @@ public final class HexieRegistries {
    public static final DeferredHolder<CreativeModeTab, CreativeModeTab> TAB = TABS.register(
       "main",
       () -> CreativeModeTab.builder(Row.TOP, 0)
-            .title(Component.translatable("itemGroup.hexietrain"))
+            .title(Component.translatable("itemGroup.hexie_auto_simuroute"))
             .icon(() -> new ItemStack((ItemLike)TRAIN_DISPATCHER_ITEM.get()))
             .displayItems((params, output) -> {
                output.accept((ItemLike)TRAIN_DISPATCHER_ITEM.get());

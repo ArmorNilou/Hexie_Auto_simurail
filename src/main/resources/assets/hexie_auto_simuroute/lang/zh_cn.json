@@ -1,5 +1,5 @@
 {
-  "block.hexietrain.train_dispatcher": "物理火车调度器",
-  "item.hexietrain.bogey_connector": "转向架连接器",
-  "itemGroup.hexietrain": "和谐：格致路由"
+  "block.hexie_auto_simuroute.train_dispatcher": "物理火车调度器",
+  "item.hexie_auto_simuroute.bogey_connector": "转向架连接器",
+  "itemGroup.hexie_auto_simuroute": "和谐：格致路由"
 }
