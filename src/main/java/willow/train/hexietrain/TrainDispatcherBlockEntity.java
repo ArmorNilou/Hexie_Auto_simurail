@@ -231,19 +231,31 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
    /** 空转日志限流：每 20 次决策（5 秒）打一条 */
    private int idleLogTicks = 0;
+   /** 规划失败后的重试冷却（driveTick 计次）。一次失败要跑最多 N 次寻路，不能每拍重来。 */
+   private int planCooldown = 0;
    /** 每段最多多少次决策（每次 5 tick）：400 ⇒ 2000 tick ⇒ 100 秒 */
    private static final int DRIVE_TICK_CAP = 400;
-   /** 本车实际用哪个面驱动（面标定得出，1=逆时针 2=顺时针） */
-   private int driveFace = 1;
-   /** 本段实际用哪个面驱动（标定面 ± 路线方向）；applyPhase 只认它 */
+   /** 面标定：把车推向 {@link #dirBogey} 那个物理端的驱动面（1=逆时针 2=顺时针） */
+   private int dirFace = 1;
+   /** 本拍实际用哪个面驱动；applyPhase 只认它 */
    private int activeFace = 1;
-   /**
-    * 面标定结果：0=未标定；+1=该驱动面让车朝 head.edge.node2 滚；-1=朝 node1 滚。
-    * 路线方向必须跟这个一致，否则 s 轴与车的实际运动反向、距站越走越大。
-    */
+   /** 面标定是否已成立：0=未标定，±1=已标定（符号只作记录，不参与选面） */
    private int dirSign = 0;
-   /** 本段路线按哪个方向规划的；方向变了必须重规划 */
-   private boolean driveTowardNode2 = true;
+   /**
+    * 标定得出的「这个面把车推向哪个物理端」，存那个端的转向架坐标。
+    *
+    * <p><b>这是整套方向逻辑的唯一事实。</b>转向架坐标是物理端，不随路线、不随
+    * 规划换端而变。于是任何一次规划只要比一比"领先端是不是这个端"就能定驱动面：
+    * <pre>
+    *   activeFace = 领先端 == dirBogey ? dirFace : 另一个面
+    * </pre>
+    * 换向、换路线、重新规划<b>全都不需要重标</b>，也不会来回翻面抽搐。
+    *
+    * <p>以前存的是"路线朝 node1 还是 node2"——那是<b>边</b>的属性（node1/node2 是
+    * 每条边各自的任意编号），换条边就失效。所以每次串链换端都得重标，重标期间车不动，
+    * 现象就是"犹豫前后走"。
+    */
+   private net.minecraft.core.BlockPos dirBogey = null;
    // ---- 面标定（方向必须实测：写死会在别的装配上翻车）----
    /** 标定油门：只要能把车推动一点点 */
    private static final int CAL_THROTTLE = 4;
@@ -259,6 +271,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
    /** 两个面都推不动时的冷却，避免每拍刷屏重试 */
    private int calCooldown = 0;
    private double calPos0 = Double.NaN;
+   /** 标定基线：领先端在本段路线上的弧长。位移量的是"路线 s 变了多少"——这才是路线坐标系，边的 node1→node2 与它无关 */
+   private double calS0 = Double.NaN;
    private TrackEdge calEdge = null;
    private UUID calTrain = null;
    private boolean driveStopped = false;
@@ -815,34 +829,17 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
    /** 绑定表 → 实体清单（按列车主轴排序），给 TrainBinder 造车厢用。区块没加载的跳过。 */
    /**
-    * 绑定表排序后的第一个 / 最后一个转向架，取它自己那根<b>操舵轴</b>的行走点（副本）。
+    * 绑定表里所有转向架的操舵轴行走点。
     *
-    * <p><b>这是导航唯一允许的端点来源。</b> Create 的 Train 是镜像用的虚拟车，它的行走点靠
-    * train.speed 积分推进，会漂（所以才有 TrainBinder.reanchor）；用虚拟点起搜，
-    * route.legs[0] 就钉在一个可能已经漂走的边上，物理转向架查 nextEdgeAfter 会得到 null → 直行。
-    *
-    * <p>区块没加载就返回 null（绝不触发加载），让 RailSearch 用另一端。
+    * <p>用途是<b>测量</b>沿轨前后顺序（RailSearch 用路线的弧长 s 挑出真正的首尾）；
+    * 导航本身只用挑出来的那两端，中间这些不参与判定。
     */
-   private TravellingPoint rosterEndPoint(boolean first) {
-      // ===== 回退开关（0.66.0）=====
-      // 两端选择依赖 BogeyRoster.ordered()，而它是"世界主轴排序"，在斜线/弯道/多车厢时
-      // 不代表列车真实前后顺序。链式（沿轨）排序做好之前，导航回到单一锚点：
-      // Create 的 leadPoint。这里返回 null 就让 RailSearch 走那条唯一来源。
-      boolean NAV_TWO_ENDS = false;
-      if (!NAV_TWO_ENDS) return null;      if (this.roster.positions().isEmpty() || this.level == null) return null;
-      List<BlockPos> order = this.roster.ordered();
-      BlockPos p = first ? order.get(0) : order.get(order.size() - 1);
-      if (!this.level.hasChunkAt(p)) return null;
-      return this.level.getBlockEntity(p) instanceof PhysicsBogeyBlockEntity b ? CreateApi.pointOf(b) : null;
-   }
-
    /** 某个位置的转向架操舵轴行走点（副本）；区块没加载或不是转向架返回 null。 */
-   private TravellingPoint pointOf(net.minecraft.core.BlockPos p) {
+   private TravellingPoint pointOf(BlockPos p) {
       if (p == null || this.level == null || !this.level.hasChunkAt(p)) return null;
       return this.level.getBlockEntity(p) instanceof PhysicsBogeyBlockEntity b ? CreateApi.pointOf(b) : null;
    }
 
-   /** 绑定表里所有转向架的操舵轴行走点，给 RailSearch 串链用。 */
    private List<TravellingPoint> bogeyPoints() {
       List<TravellingPoint> out = new ArrayList<>();
       for (PhysicsBogeyBlockEntity b : this.rosterBogeys()) {
@@ -853,12 +850,19 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
    }
 
    /**
-    * 沿轨串链：用当前路线的弧长 s 给所有绑定转向架排序，最小 s = 车尾，最大 s = 车头。
+    * 沿轨串链：用当前路线的弧长 s 给所有绑定转向架排序。
+    * <b>s 最小 = 后端</b>（route 的 s=0，就是拿它当起点搜出来的那端），
+    * <b>s 最大 = 领先端</b>（距站只认它）。
     *
     * <p>为什么不用 BogeyRoster.ordered()：那是世界主轴排序，斜线/弯道/多车厢时不代表列车前后。
     * s 是沿轨弧长，单调递增，这才是物理上的前后顺序。
     *
     * <p>任何一根算不出 s（不在这条路线上）就整体不动 —— 不猜。
+    * RailSearch 已经用同一条判据验过，所以正常不会走到这里。
+    *
+    * <p><b>换端不再作废面标定。</b>标定存的是"这个面把车推向哪个物理端"
+    * （{@link #dirBogey}，一个转向架坐标），跟路线朝哪、s 轴怎么摆都无关，
+    * 所以换端只需要重算 {@link #activeFace}，不需要重标。
     */
    private void refreshNavEnds(TrackGraph g) {
       if (this.driveResult == null || !this.driveResult.ok || this.driveResult.route == null) return;
@@ -872,9 +876,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
          if (p == null || p.edge == null) continue;
          double s = this.driveResult.route.sOf(p.edge, p.position);
          if (!Double.isFinite(s)) {
-            // 严格：只要有一根算不出弧长，这次串链整体作废，保持上一次的尾/头不动。
-            // 以前这里 continue 跳过，结果只剩一根 ⇒ tail==head ⇒ 尾端在两根之间乱跳 ⇒
-            // 每跳一次就重标 dirSign ⇒ 面在 1/2 之间翻 ⇒ 车前后犹豫。这就是"两边打架"。
+            // 严格：只要有一根算不出弧长，这次串链整体作废，保持上一次的两端不动。
             return;
          }
          any = true;
@@ -883,18 +885,21 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
       }
       if (!any) return;
       if (tail == null || head == null) return;
-      // 两根以上转向架却算出同一个尾/头 = 串链退化，不能当结果用
+      // 两根以上转向架却算出同一个端 = 串链退化，不能当结果用
       if (bs.size() > 1 && java.util.Objects.equals(tail, head)) return;
-      boolean changed = !java.util.Objects.equals(tail, this.navTailPos);
+      boolean changed = !java.util.Objects.equals(tail, this.navTailPos)
+         || !java.util.Objects.equals(head, this.navHeadPos);
       this.navTailPos = tail;
       this.navHeadPos = head;
       if (changed) {
-         // 尾端换了 ⇒ 方向参照系换了 ⇒ 面标定作废重标
-         HexieTrain.LOGGER.info("[nav] 沿轨串链：尾端={} 头端={}（方向参照换端，面标定重标）",
-            tail == null ? "-" : tail.toShortString(), head == null ? "-" : head.toShortString());
-         this.dirSign = 0;
-         this.calPhase = 0;
-         this.calTrain = null;
+         HexieTrain.LOGGER.info("[nav] 沿轨串链：后端={} 领先端={} 弧长跨度={}m（面标定不作废）",
+            new Object[]{tail.toShortString(), head.toShortString(), String.format("%.2f", sMax - sMin)});
+      }
+      // 标定的那个物理端被解绑/拆掉了 ⇒ 标定作废。方向事实依附于那个转向架，它没了就没了。
+      if (this.dirSign != 0 && this.dirBogey != null && !this.roster.contains(this.dirBogey)) {
+         HexieTrain.LOGGER.info("[nav] 标定端 {} 已不在绑定表里 ⇒ 面标定作废重标",
+            this.dirBogey.toShortString());
+         invalidateDirection();
       }
    }
 
@@ -1045,7 +1050,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
    }
 
    public Component getDisplayName() {
-      return Component.translatable("block.hexietrain.train_dispatcher");
+      return Component.translatable("block.hexie_auto_simuroute.train_dispatcher");
    }
 
    public void serverTick() {
@@ -1071,6 +1076,19 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             if (this.boundTrain != null) {
                this.dissolve();
             }
+            // 解绑 = 全部失效：距站、调度状态、路线、阶段、到站标记一个都不许留。
+            // 以前这里直接 return，syncTrainPresence/resetRuntimeState 永远跑不到，
+            // 于是 UI 上的「距站」和「调度：xx」一直停在解绑前的值。
+            this.driveResult = null;
+            this.driveTarget = null;
+            this.cacheDistShown = Double.NaN;
+            this.legRemaining = -1.0;
+            this.arrivedFlag = false;
+            this.driveHalted = false;
+            this.drivePhase = PH_IDLE;
+            this.throttleCmd = 0;
+            this.brakeCmd = 0;
+            this.setDispatcherState(DispatcherState.IDLE);
             this.releaseEverything();
             return;
          }
@@ -1497,39 +1515,34 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
 
 
-      // 方向必须来自面标定结果：dirSign>0 ⇒ 该驱动面让车朝 head.edge.node2 滚
-      // ===== 健康检查：脱轨 / 车头点失效 ⇒ 制动 + 报告 + 按目标尝试恢复（单向）=====
-      if (train.derailed || train.invalid || this.headPointBad(train)) {
-         this.recoverTicks++;
-         if (this.recoverTicks % 20 == 1) {
-            HexieTrain.LOGGER.warn("[recover] 位置失效 derailed={} invalid={} 目标={} entry={}",
-               train.derailed, train.invalid, target, this.myEntry);
-         }
-         this.holdOutputs();      // 异常 = 制动 + 报告（不松闸）
-         this.tryRecover(train);
-         return;
-      }
-
-      // ===== 两端：沿轨串链得出的车尾 / 车头，只这两个点 =====
-      // 尾端 = 寻路起点 + 方向参照（towardNode2 / dirSign 都在这条边上量）
-      // 头端 = 量"还有多远到站"
+      // ===== 两端：沿轨串链得出的<b>后端</b> / <b>领先端</b>，只这两个点 =====
+      // 后端   = 寻路起点（route 的 s=0），由 RailSearch 两端各搜一次决定，这里不推方向
+      // 领先端 = route 上 s 最大的转向架，距站只认它
       TravellingPoint navPt = this.pointOf(this.navTailPos);
-      if (navPt == null) { List<TravellingPoint> seed = this.bogeyPoints(); navPt = seed.isEmpty() ? CreateApi.leadPoint(train) : seed.get(0); }
-      if (!this.ensureDirection(train, navPt)) {
-         if (this.idleLogTicks % 20 == 0) HexieTrain.LOGGER.info("[drive] 空转 原因=标定中/等静止 target={} entry={} dirSign={} calPhase={}", target, this.myEntry, this.dirSign, this.calPhase);
-         return;
+      if (navPt == null) {
+         List<TravellingPoint> seed = this.bogeyPoints();
+         navPt = seed.isEmpty() ? CreateApi.leadPoint(train) : seed.get(0);
       }
-      boolean towardNode2 = this.dirSign > 0;
-
       TravellingPoint pt = this.pointOf(this.navHeadPos);
       if (pt == null) pt = navPt;
       double s = this.routeS(pt);
       boolean needPlan = this.driveResult == null || !this.driveResult.ok
          || !target.equals(this.driveTarget) || !Double.isFinite(s);
 
+      // 冷却中：抱闸等。一次失败要跑最多 N 次寻路，每拍重来会把服务端线程堵死、日志刷爆。
+      // 换站（target 变了）不受冷却限制，那是新的合法请求。
+      if (needPlan && this.planCooldown > 0 && target.equals(this.driveTarget)) {
+         this.planCooldown--;
+         this.holdOutputs();
+         return;
+      }
+
       if (needPlan) {
          long planT0 = System.nanoTime();
-         this.driveResult = RailSearch.searchTrainWide(train.graph, train, st, target, 4096.0, this.bogeyPoints());
+         // 上一段用的起点端：两端都合格（环线）时优先保持它，免得来回换向抽搐
+         TravellingPoint preferred = this.driveResult == null ? null : this.driveResult.startPoint;
+         this.driveResult = RailSearch.searchTrainWide(train.graph, train, st, target, 4096.0,
+            this.bogeyPoints(), preferred);
          if (this.driveResult.ok && this.driveResult.route != null) {
             this.refreshNavEnds(train.graph);            // 用新路线重新串链
             navPt = this.pointOf(this.navTailPos);
@@ -1537,71 +1550,93 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             pt = this.pointOf(this.navHeadPos);
             if (pt == null) pt = navPt;
          }
-         if (this.driveResult.ok && this.driveResult.route != null) this.logRouteEnds(this.pointOf(this.navTailPos), this.pointOf(this.navHeadPos), this.driveResult.route);
+         if (this.driveResult.ok && this.driveResult.route != null) {
+            this.logRouteEnds(this.pointOf(this.navTailPos), this.pointOf(this.navHeadPos), this.driveResult.route);
+         }
          this.probeMillis = (System.nanoTime() - planT0) / 1.0e6;   // 规划耗时，UI 可看
          this.probeOk = this.driveResult.ok;
          this.probeEdges = this.driveResult.ok ? this.driveResult.edges : 0;
-         this.probeBackwards = this.driveResult.ok && !this.driveResult.towardNode2;
-         this.driveTowardNode2 = this.driveResult.ok && this.driveResult.towardNode2;   // 方向是搜出来的
+         this.probeBackwards = this.driveResult.ok && !this.driveResult.towardNode2;   // 纯诊断，不参与选面
          if (!target.equals(this.driveTarget)) {   // 换段 ⇒ 解除看门狗 + 清到站标记
+            this.planCooldown = 0;
             this.driveHalted = false;
-            this.arrivedFlag = false;      // 必须清：否则第二站起 markArrived 永远不调，"等 N 秒"就死等
+            this.arrivedFlag = false;
          }
          this.driveTarget = target;
          this.driveTicks = 0;
          this.throttleCmd = 0;
          this.coastTicks = 0;
-         // 重规划不再重置阶段：否则永远停在行驶中，收油门/滑车/急刹一次都进不去
-         // 只有「待命」才重新起步：规划成功但阶段还停在待命，说明上一段已结束
+         // 路线换了 ⇒ 弧长坐标系换了 ⇒ 上一拍的 s 和标定基线都作废
+         this.lastRouteS = Double.NaN;
+         this.calS0 = Double.NaN;
+         this.calEdge = null;
+         this.calPhase = this.dirSign != 0 ? 3 : 0;   // 已标定的不必重标，只重取基线以外的东西
          if (this.drivePhase == PH_IDLE) this.drivePhase = PH_RUN;
          HexieTrain.LOGGER.info("[drive] 新段 target={} entry={} | {}", new Object[]{target, this.myEntry, this.driveResult.describe()});
          if (!this.driveResult.ok) {
-            // 规划不成立就抱闸，并把原因说清楚。绝不许"照旧往前开"：
-            // 断头路和车站都是边点，少了站名/准入方向这两道校验，车会一路开到尽头。
+            // 规划不成立就抱闸，并把原因说清楚。绝不许"照旧往前开"。
+            this.planCooldown = 10;
             HexieTrain.LOGGER.warn("[drive] 规划失败，抱闸停住：{}", this.driveResult.note);
             this.cacheDistShown = Double.NaN;
             this.phaseIdle();
             this.holdOutputs();
             return;
          }
-         // 面 = 标定映射 × 路线实际方向：路线要走的正是标定方向就用标定面，反之换另一个面（换向器反相）
-         this.activeFace = (this.driveTowardNode2 == (this.dirSign > 0))
-            ? this.driveFace : (this.driveFace == 1 ? 2 : 1);
-         HexieTrain.LOGGER.info("[drive] 本段方向={} 标定方向={} ⇒ 用面 {}", new Object[]{
-            this.driveTowardNode2 ? "朝node2" : "朝node1",
-            this.dirSign > 0 ? "朝node2" : "朝node1", this.activeFace});
-         HexieTrain.LOGGER.info("[dir] 路线flag={} dirSign={} driveFace={} activeFace={} 尾端={}",
-            new Object[]{this.driveTowardNode2, this.dirSign, this.driveFace, this.activeFace,
-               this.navTailPos == null ? "-" : this.navTailPos.toShortString()});
       }
 
-      // ===== 每拍都要重算 activeFace =====
-      // 以前只在 needPlan 里算，规划那一拍 dirSign 恰好被 refreshNavEnds 清成 0，
-      // 算出来是 (flag == (0>0)) = !flag，纯瞎猜，而且之后 never 重算 —— 方向就这样反了。
-      if (this.driveResult != null && this.driveResult.ok) {
-         if (this.dirSign == 0) {
-            this.holdOutputs();        // 参照系刚换，等标定出来再走
-            return;
+      // ===== 面标定：必须排在规划之后 =====
+      // 标定要量的就是"这个面推着车往 route 的 s 增大还是减小走"。没有 route 就没有 s，
+      // 量不出来。以前把标定排在规划前，只能拿"边上的位置"凑，而边的 node1→node2
+      // 是每条边各自的任意编号，跟路线方向毫无关系 —— 方向错就错在这里。
+      if (!this.ensureDirection(train)) {
+         if (this.idleLogTicks % 20 == 0) {
+            HexieTrain.LOGGER.info("[drive] 空转 原因=标定中/等静止 target={} entry={} dirSign={} calPhase={}",
+               new Object[]{target, this.myEntry, this.dirSign, this.calPhase});
          }
-         this.activeFace = (this.driveTowardNode2 == (this.dirSign > 0))
-            ? this.driveFace : (this.driveFace == 1 ? 2 : 1);
+         return;
       }
+
+      // ===== 每拍重算驱动面 =====
+      // 要的是「朝领先端走」。标定给出的是「哪个面把车推向哪个物理端」，
+      // 所以只需比一比领先端是不是那个端 —— 与路线朝 node1/node2、与 s 轴怎么摆都无关。
+      if (this.dirBogey == null || this.navHeadPos == null) {
+         this.holdOutputs();
+         if (this.idleLogTicks % 20 == 0) {
+            HexieTrain.LOGGER.warn("[drive] 空转 原因=标定端或领先端缺失 dirBogey={} 领先端={}",
+               new Object[]{this.dirBogey == null ? "-" : this.dirBogey.toShortString(),
+                  this.navHeadPos == null ? "-" : this.navHeadPos.toShortString()});
+         }
+         return;
+      }
+      int faceNow = this.navHeadPos.equals(this.dirBogey) ? this.dirFace : flipFace(this.dirFace);
+      if (faceNow != this.activeFace) {
+         HexieTrain.LOGGER.info("[dir] 领先端={} 标定推向={} ⇒ activeFace {} → {}（dirFace={} dirSign={}）", new Object[]{
+            this.navHeadPos.toShortString(), this.dirBogey.toShortString(),
+            this.activeFace, faceNow, this.dirFace, this.dirSign});
+      }
+      this.activeFace = faceNow;
 
       RailCache.Route route = this.driveResult.route;
       if (pt == null) { this.phaseIdle(); this.driveResult = null; return; }
 
       // 减速：用缓存弧长算（便宜、不权威，算错只是快慢问题）
       double sNow = route.sOf(pt.edge, pt.position);
-      // 方向错检测：油门在给、路线弧长却在倒退 ⇒ 面选反了。只在真发生时喊一次（每秒最多一条）。
-      if (Double.isFinite(this.lastRouteS) && Double.isFinite(sNow) && sNow < this.lastRouteS - 0.01
-            && this.output(SignalChannel.THROTTLE) > 0) {
-         if (this.idleLogTicks % 20 == 0) {
-            HexieTrain.LOGGER.warn("[dir] 倒退！s {} -> {} activeFace={} dirSign={} 路线flag={} 尾端={} 头端={}",
-               new Object[]{String.format("%.2f", this.lastRouteS), String.format("%.2f", sNow),
-                  this.activeFace, this.dirSign, this.driveTowardNode2,
-                  this.navTailPos == null ? "-" : this.navTailPos.toShortString(),
-                  this.navHeadPos == null ? "-" : this.navHeadPos.toShortString()});
-         }
+      // 硬不变量：给着油门，领先端的 s 只许增大。
+      // 减小 = activeFace 选反了 = 车正在往车站的反方向开。这不是"慢一点"的问题，
+      // 是方向事实错了 —— 作废标定、抱闸、下一拍重标，绝不许继续推着它开。
+      if (Double.isFinite(this.lastRouteS) && Double.isFinite(sNow)
+            && sNow < this.lastRouteS - 0.02 && this.output(SignalChannel.THROTTLE) > 0) {
+         HexieTrain.LOGGER.warn("[dir] 领先端 s 倒退 {} → {}（activeFace={} dirFace={} 标定推向={} 领先端={} 后端={}）"
+            + " ⇒ 面选反，作废标定并抱闸重标", new Object[]{
+            String.format("%.2f", this.lastRouteS), String.format("%.2f", sNow),
+            this.activeFace, this.dirFace,
+            this.dirBogey == null ? "-" : this.dirBogey.toShortString(),
+            this.navHeadPos.toShortString(),
+            this.navTailPos == null ? "-" : this.navTailPos.toShortString()});
+         invalidateDirection();
+         this.calCooldown = 20;
+         this.holdOutputs();
+         return;
       }
       this.lastRouteS = sNow;
       if (!Double.isFinite(sNow) || !Double.isFinite(route.stationS)) {
@@ -1763,7 +1798,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
 
       if (this.driveTicks % 2 == 0) {
          HexieTrain.LOGGER.info("[drive] t={} {} face={} d={} v={} throttle={} brake={}", new Object[]{
-            this.driveTicks, phaseName(this.drivePhase), this.driveFace, String.format("%.1f", d),
+            this.driveTicks, phaseName(this.drivePhase), this.activeFace, String.format("%.1f", d),
             String.format("%.2f", v), this.output(SignalChannel.THROTTLE), this.output(SignalChannel.BRAKE)});
       }
    }
@@ -1903,30 +1938,64 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
       }
    }
 
+   /** 另一个驱动面。只有两个面，翻面就是这么个意思。 */
+   private static int flipFace(int face) {
+      return face == 1 ? 2 : 1;
+   }
+
    /**
-    * 方向标定：本车只做一次，产出「哪个面驱动 + 车朝哪头滚」。
+    * 面标定作废：把方向事实整个清掉，下一拍从取样重新开始。
     *
-    * 为什么必须实测：调度器的面 ↔ 物理方向是多变量（器械挂哪边、轮对怎么装），
-    * 写死任何一个都会在别的装配上翻车。这里只观测一件事：
-    *   给某个面加一点油门后，车头所在边上的 position 往哪边变。
-    *   position 变大 = 朝 head.edge.node2 滚(+1)，变小 = 朝 node1 滚(-1)。
-    *
-    * 试法：先 LEFT；LEFT 推不动就试 RIGHT；两个都不动 ⇒ 报错、不驱动（不兜底）。
-    * 返回 true 表示已标定、可以规划行驶。
+    * <p>什么时候必须作废：换车（装配变了）、标定端被解绑、实测发现给着油门 s 在倒退。
+    * <b>换端不作废</b> —— 标定存的是物理端，换端只换 {@link #activeFace} 的算法结果。
     */
-   private boolean ensureDirection(Train train, TravellingPoint ref) {
+   private void invalidateDirection() {
+      this.dirSign = 0;
+      this.dirBogey = null;
+      this.calPhase = 0;
+      this.calTick = 0;
+      this.calFace = 1;
+      this.calS0 = Double.NaN;
+      this.calPos0 = Double.NaN;
+      this.calEdge = null;
+      this.lastRouteS = Double.NaN;
+   }
+
+   /**
+    * 方向标定。产出两件东西：
+    * <pre>
+    *   dirFace  = 能把车推动的那个驱动面（1=逆时针 2=顺时针）
+    *   dirBogey = 那个面把车推向哪个<b>物理端</b>（存那一端的转向架坐标）
+    * </pre>
+    *
+    * <h2>量的是路线弧长，不是边上的位置</h2>
+    * 以前量 {@code edge.position}（从 node1 量起）。可 node1/node2 是<b>每条边各自的任意编号</b>，
+    * 跟"车往站开"没有任何关系；换一条边，正方向就翻了。所以标出来的东西只能在
+    * 标定时那条边上用，一换端就得重标，重标期间车不动 —— 现象就是"犹豫前后走"。
+    *
+    * <p>现在量 {@code route.sOf(领先端)}：s 的正方向<b>就是</b>行进方向，永远。
+    * s 变大 ⇒ 这个面把车推向领先端（{@code dirBogey = navHeadPos}）；
+    * s 变小 ⇒ 推向另一端（{@code dirBogey = navTailPos}）。
+    * 结果是一个<b>物理端</b>，与路线怎么摆无关，所以换向不必重标。
+    *
+    * <p>必须排在规划之后调用：没有 route 就没有 s，量不出来。
+    *
+    * <p>试法：先逆时针面；推不动就试顺时针面；两个都不动 ⇒ 报错、不驱动（不兜底）。
+    *
+    * @return true 表示已标定、可以行驶
+    */
+   private boolean ensureDirection(Train train) {
+      if (this.driveResult == null || !this.driveResult.ok || this.driveResult.route == null) return false;
+      if (this.navHeadPos == null || this.navTailPos == null) return false;
+
       // 换车必须重标：装配换了，同一个面的物理含义就变了
       if (this.calTrain != null && !this.calTrain.equals(train.id)) {
          this.calTrain = train.id;
-         this.dirSign = 0;
-         this.calPhase = 0;
-         this.calFace = 1;
-         this.calTick = 0;
-         this.calPos0 = Double.NaN;
-         this.calEdge = null;
+         invalidateDirection();
+         this.calCooldown = 0;
       }
       if (this.calTrain == null) this.calTrain = train.id;
-      if (this.dirSign != 0 && this.calPhase >= 3) return true;
+      if (this.dirSign != 0 && this.calPhase >= 3 && this.dirBogey != null) return true;
       if (!(this.level instanceof ServerLevel sl)) return false;
       if (this.calCooldown > 0) {
          this.calCooldown--;
@@ -1934,21 +2003,27 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
          return false;
       }
 
-      TravellingPoint h = (ref != null && ref.edge != null) ? ref : CreateApi.leadPoint(train);   // 参照点必须是选中的那一端
+      // 量领先端：距站认它，方向也拿它当尺子
+      TravellingPoint h = this.pointOf(this.navHeadPos);
       if (h == null || h.edge == null) return false;
 
-      // 静止判定不看测速表：读档瞬间 measuredSpeedMps() 会吐出假速度（日志见过 20.61 m/s），
-      // 那会让标定永远取不到基线。改成看车头在边上位置连续两拍不动。
+      // --- 相位 0：取样。基线同时取"边上位置"（判静止用）和"路线弧长"（量位移用）
       if (this.calPhase == 0) {
          this.holdOutputs();
          this.calEdge = h.edge;
-         // 基线也要用 calEdge 自己的坐标系（从 calEdge.node1 量），和 phase 4 比较时一致；
-         // 直接存 h.position 的话，一旦车头边与 calEdge 反向就会比出约一个边长的假位移
          double len0 = CreateApi.length(this.calEdge);
          this.calPos0 = (h.edge.node1 == this.calEdge.node1) ? h.position : (len0 - h.position);
+         this.calS0 = this.driveResult.route.sOf(h.edge, h.position);
+         if (!Double.isFinite(this.calS0)) {
+            HexieTrain.LOGGER.warn("[cal] 领先端不在本段路线上，取不到基线 ⇒ 本拍不标定");
+            this.calEdge = null;
+            return false;
+         }
          this.calPhase = 4;
          return false;
       }
+
+      // --- 相位 4：确认静止（用边上位置，跨边就重取）
       if (this.calPhase == 4) {
          this.holdOutputs();
          boolean still = RailCache.sameLink(h.edge, this.calEdge);
@@ -1963,31 +2038,34 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
          }
          this.calTick = 0;
          this.calPhase = 1;
-         HexieTrain.LOGGER.info("[cal] 取基线 face={} 边长={} pos0={}", new Object[]{
+         HexieTrain.LOGGER.info("[cal] 取基线 face={} 边长={} s0={}", new Object[]{
             this.calFace, String.format("%.1f", CreateApi.length(this.calEdge)),
-            String.format("%.2f", this.calPos0)});
+            String.format("%.2f", this.calS0)});
          return false;
       }
 
-      if (!RailCache.sameLink(h.edge, this.calEdge)) {
-         HexieTrain.LOGGER.info("[cal] 车头跨边，重取基线 face={}", this.calFace);
+      // --- 相位 1：给这个面一点油门，量领先端的 s 变了多少
+      double sNow = this.driveResult.route.sOf(h.edge, h.position);
+      if (!Double.isFinite(sNow)) {
+         // 领先端走出路线了：这条路线已经不能描述车，别硬量
+         HexieTrain.LOGGER.info("[cal] 领先端已不在本段路线上 ⇒ 放弃本次标定，等重规划");
          this.calPhase = 0;
+         this.calEdge = null;
          return false;
       }
-      double len = CreateApi.length(this.calEdge);
-      double posNow = (h.edge.node1 == this.calEdge.node1) ? h.position : (len - h.position);
-      double moved = posNow - this.calPos0;
+      double moved = sNow - this.calS0;
 
       if (Math.abs(moved) >= CAL_MIN_TRAVEL) {
          this.dirSign = moved > 0.0 ? 1 : -1;
-         this.driveFace = this.calFace;
+         this.dirFace = this.calFace;
+         // 位移为正 = 朝领先端推进 ⇒ 这个面推向领先端
+         this.dirBogey = moved > 0.0 ? this.navHeadPos : this.navTailPos;
          this.calPhase = 3;
          this.calTick = 0;
          this.holdOutputs();
          this.setDispatcherState(DispatcherState.IDLE);
-         HexieTrain.LOGGER.info("[cal] 标定完成 face={} dirSign={} 位移={} ⇒ 路线朝 {}", new Object[]{
-            this.driveFace, this.dirSign, String.format("%.3f", moved),
-            this.dirSign > 0 ? "head.edge.node2" : "head.edge.node1"});
+         HexieTrain.LOGGER.info("[cal] 标定完成 face={} 领先端s位移={} ⇒ 这个面把车推向 {} 那个物理端",
+            new Object[]{this.dirFace, String.format("%.3f", moved), this.dirBogey.toShortString()});
          this.sendData();
          // 这一拍只收尾（已抱闸），下一拍再由 driveTick 规划行驶：
          // 否则同一拍里 holdOutputs() 的刹车与 applyPhase() 的油门互相覆盖，车会抖一下
@@ -2011,10 +2089,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
          this.calTick = 0;
          HexieTrain.LOGGER.info("[cal] 逆时针面推不动 → 改试顺时针面");
       } else {
-         this.dirSign = 0;
-         this.calPhase = 0;
-         // 面必须复位：否则每次重试都从 RIGHT 开始，LEFT 永远没机会
-         this.calFace = 1;
+         invalidateDirection();
          // 40 次决策 = 200 tick = 10 秒；原来写 200 = 50 秒，太长
          this.calCooldown = 40;
          this.setDispatcherState(DispatcherState.IDLE);
@@ -2097,7 +2172,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
       }
 
       // 验证：沿当前方向能不能到那个名字的站（站名 + 准入端两道校验都在 searchFrom 里）
-      boolean towardNode2 = this.dirSign > 0;
+
       double len = bestEdge.getLength();
       double pos = Math.max(0.0, Math.min(len, bestPos));
       TravellingPoint probe = new TravellingPoint(bestEdge.node1, bestEdge.node2, bestEdge, pos, false);
@@ -2821,7 +2896,8 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
       tag.putDouble("ProbeDist", this.cacheDistShown);
       // 面标定结果必须持久化：否则每次读档重标，车会在站里乱动
       tag.putInt("DirSign", this.dirSign);
-      tag.putInt("DriveFace", this.driveFace);
+      tag.putInt("DirFace", this.dirFace);
+      if (this.dirBogey != null) tag.putLong("DirBogey", this.dirBogey.asLong());
       if (this.calTrain != null) tag.putUUID("CalTrain", this.calTrain);
 
       // FreqLayout：2 = 制动×2 + 节流阀×2（0.62.0 起）。缺省/0 = 旧的四通道八槽布局，读的时候要迁移。
@@ -2873,7 +2949,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
       this.cacheDistShown = tag.getDouble("ProbeDist");
       // 面标定结果必须持久化：否则每次读档重标，车会在站里乱动
       this.dirSign = tag.getInt("DirSign");
-      this.driveFace = tag.getInt("DriveFace") == 2 ? 2 : 1;
+      this.dirFace = tag.getInt("DirFace") == 2 ? 2 : 1;
+      // 标定的物理端必须存回来：它决定了"哪个面把车推向哪一端"，是整套方向逻辑的事实
+      this.dirBogey = tag.contains("DirBogey") ? BlockPos.of(tag.getLong("DirBogey")) : null;
+      // 有面没端 = 半个事实，等于没标定
+      if (this.dirBogey == null) this.dirSign = 0;
       this.calPhase = this.dirSign != 0 ? 3 : 0;
       this.calTrain = tag.hasUUID("CalTrain") ? tag.getUUID("CalTrain") : null;
       this.scheduleSlot = tag.contains("Schedule") ? ItemStack.parseOptional(registries, tag.getCompound("Schedule")) : ItemStack.EMPTY;

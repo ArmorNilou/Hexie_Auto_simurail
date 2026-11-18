@@ -55,6 +55,10 @@ public final class RailSearch {
    public static final double ANGLE_COS = 0.875;
 
    private static final double EPS = 1e-6;
+   /** 端点容差：转向架允许落在搜索起点"后方"多少米。超过 = 路线没覆盖整个车体。 */
+   private static final double TAIL_EPS = 0.05;
+   /** 车站必须比领先端再远这么多米，否则不算"往前开到站"。 */
+   private static final double LEAD_EPS = 0.02;
 
    // ================================================================ 结构
 
@@ -142,48 +146,6 @@ public final class RailSearch {
       if (train == null) return Result.fail("参数为空");
       return searchFrom(g, CreateApi.leadPoint(train), station, expectName, maxDistance);
    }
-   /**
-    * 以<b>整列车的两端</b>为起点搜索，并且把选中的那一端当作唯一参照系带回去。
-    *
-    * <p><b>范式</b>（和 Create 的车厢链一致）：终端只有两个 —— 绑定表排序后的第一个和最后一个转向架。
-    * 每次都只从<b>其中一端</b>起搜，不许再引入第三个点（以前那个 CreateApi.leadPoint 就是第三点，
-    * 它既不是首端也不是尾端，方向判定一对就错）。多少根转向架都只从这两端里挑一个。
-    *
-    * <p>怎么挑：先从 A 端起搜，再看<b>另一端 B 落不落在这次算出来的路线上</b>。
-    * 落在上面说明 A 是上游端、整列车都被覆盖；否则换 B 端起搜。
-    * 两端都覆盖（环线 / 短车）取总长较短的那条；都不覆盖就把 A 的结果原样上报。<b>不补边、不猜。</b>
-    *
-    * <p>方向旗 {@code towardNode2} 一律在<b>被选中的那一端</b>的边上判定 —— 它和 {@code Route.legs[0]}
-    * 是同一条边，也就和上层面标定用的是同一个参照系。
-    *
-    * @param endA 绑定表排序后的第一个转向架（首端）
-    * @param endB 绑定表排序后的最后一个转向架（尾端）；只有一个时与 endA 相同
-    */
-   public static Result search(TrackGraph g, Train train, GlobalStation station, String expectName,
-                               double maxDistance, TravellingPoint endA, TravellingPoint endB) {
-      if (train == null) return Result.fail("参数为空");
-      if (endA == null && endB == null) {
-         // 绑定表是空的：只能退回 Create 自己的车头点（唯一来源），而且它会是唯一参照系
-         return withStart(searchFrom(g, CreateApi.leadPoint(train), station, expectName, maxDistance),
-            CreateApi.leadPoint(train));
-      }
-
-      Result rA = endA == null ? null : searchFrom(g, endA, station, expectName, maxDistance);
-      Result rB = endB == null ? null : searchFrom(g, endB, station, expectName, maxDistance);
-
-      boolean aCovers = covers(rA, endB);
-      boolean bCovers = covers(rB, endA);
-
-      if (aCovers && bCovers) {
-         return rA.route.total <= rB.route.total ? withStart(rA, endA) : withStart(rB, endB);
-      }
-
-      if (aCovers) return withStart(rA, endA);
-      if (bCovers) return withStart(rB, endB);
-      if (rA != null && rA.ok) return withStart(rA, endA);
-      if (rB != null && rB.ok) return withStart(rB, endB);
-      return rA != null ? rA : (rB != null ? rB : Result.fail("两端都搜不到目标站"));
-   }
 
    /** 记下"这次用了哪一端"，并把方向旗改成在该端判定。 */
    private static Result withStart(Result r, TravellingPoint start) {
@@ -202,63 +164,186 @@ public final class RailSearch {
       boolean node1To2 = (start.edge.node1 == leg.edge.node1) != leg.reversed;
       return new Result(true, node1To2, r.route, r.distance, r.edges, r.note, start);
    }
-   /** 这次搜出来的路线，是否覆盖到另一端的边（= 起点确实在那端的上游）。 */
    /**
-    * 整列车串链后从<b>车尾</b>起搜（0.67.0）。
+    * 整列车两端共同起作用，然后决定用哪一端。<b>测量用全车，导航只认两端。</b>
     *
-    * <p>步骤：
+    * <h2>一条路线要同时满足三件事，缺一件车就散</h2>
+    * <ol>
+    *   <li><b>全部转向架都在这条路线上。</b>逐转向架过岔的前提 —— 少一根它就没有
+    *       {@code nextEdgeAfter}，会直行，在道岔上被拉断。</li>
+    *   <li><b>没有任何转向架落在搜索起点"后方"</b>（s &lt; 0）。否则路线只覆盖了车体一半。</li>
+    *   <li><b>车站必须在领先端之外</b>（stationS &gt; s 最大）。否则就是"背着车站开"。</li>
+    * </ol>
+    * 这三条<b>对其中一个端必然不成立</b>（把领先端当起点，车体就全落在起点后方），
+    * 所以两端各验一次，合格的那个端就是<b>后端</b>。
+    *
+    * <h2>为什么先要"枚举种子找一条盖住整车的路线"</h2>
+    * 两端是<b>用 s 轴量出来的</b>，可 s 轴只能来自某次寻路。而某次寻路<b>未必覆盖整车</b>：
+    * 从列车中段的转向架起搜，落在它后面的那些必然算不出 s。
+    *
+    * <p>以前（0.99）就是拿 {@code pts.get(0)} 起搜一次、把算不出 s 的跳过、直接认最小/最大为两端 ——
+    * 那是拿一条<b>残缺路线</b>去定两端。2026-11-18 23:30 的日志就是这个：
     * <pre>
-    *   ① 任取一根转向架起搜 → 得到一条到站路线 r0
-    *   ② 用 r0 的弧长 s 给所有转向架排序：最小 s = 车尾，最大 s = 车头
-    *   ③ 从车尾起搜 → legs[0] 落在车尾，整列车每一根转向架脚下的边都在路线里
-    *   ④ 校验车头也在这条路线上，否则拒绝出发（不猜）
+    *   23:29:57 A端合格：转向架4根全在路线上 s∈[0.00,8.00]     ← 探路正好从后端起搜，成功
+    *   23:30:23 失败 两端都不合格 ｜ 都是"有转向架不在这条路线上"  ← 探路从中间起搜，两端都错
     * </pre>
+    * 所以必须先找到一个<b>覆盖全车</b>的种子，再拿它的 s 轴定两端。
     *
-    * <p>为什么必须从车尾：{@code Route.legs[0]} 就是起点那条边，车头起搜的话车尾那几根
-    * 转向架脚下的边不在路线里，BogeySteering 的 {@code nextEdgeAfter} 会返回 null → 按直行过岔。
+    * <h2>方向不是算出来的，是被结果确定的</h2>
+    * 选中的那次搜索的 s 轴方向，<b>就是</b>车将要行进的方向：
+    * <pre>
+    *   后端   = s 最小 = 搜索起点 = route 的 s=0
+    *   领先端 = s 最大 = 距站唯一判据
+    *   距站   = stationS − s(领先端)
+    * </pre>
+    * 这两条对正着开和倒着开同样成立，不需要任何符号翻转。
+    *
+    * @param preferred 上一段用的起点端。两端都合格（环线）时优先保持它，避免来回换向抽搐。
     */
    public static Result searchTrainWide(TrackGraph g, Train train, GlobalStation station, String expectName,
-                                        double maxDistance, List<TravellingPoint> pts) {
+                                        double maxDistance, List<TravellingPoint> pts,
+                                        TravellingPoint preferred) {
       if (train == null) return Result.fail("参数为空");
       if (pts == null || pts.isEmpty()) {
-         return withStart(searchFrom(g, CreateApi.leadPoint(train), station, expectName, maxDistance),
-            CreateApi.leadPoint(train));
+         TravellingPoint lead = CreateApi.leadPoint(train);
+         return withStart(searchFrom(g, lead, station, expectName, maxDistance), lead);
+      }
+      if (pts.size() == 1) {
+         return withStart(searchFrom(g, pts.get(0), station, expectName, maxDistance), pts.get(0));
       }
 
-      // ① 任取一根起搜（只用来建立 s 轴，不用它的方向）
-      Result r0 = searchFrom(g, pts.get(0), station, expectName, maxDistance);
-      if (!r0.ok || r0.route == null) return r0;
+      // ===== 阶段一：枚举种子，直到有一条路线能覆盖整车（只有这样 s 轴才量得出真正的两端）=====
+      // 顺序：上一段的起点 → 绑定表顺序。正常情况下第一个就成，最坏也只是把每根试一遍。
+      Result probe = null; TravellingPoint probeSeed = null;
+      String why = "-";
+      List<TravellingPoint> seeds = new ArrayList<>(pts.size() + 1);
+      if (preferred != null && preferred.edge != null) seeds.add(preferred);
+      for (TravellingPoint p : pts) if (p != null && p.edge != null) seeds.add(p);
+      for (TravellingPoint seed : seeds) {
+         Result r = searchFrom(g, seed, station, expectName, maxDistance);
+         if (r == null || !r.ok || r.route == null) {
+            why = "寻路失败：" + (r == null ? "无结果" : r.note);
+            continue;
+         }
+         int miss = firstUncovered(r, pts);
+         if (miss >= 0) { why = "从这端起搜覆盖不到全车（第 " + (miss + 1) + " 根算不出弧长）"; continue; }
+         probe = r; probeSeed = seed;
+         break;
+      }
+      if (probe == null) {
+         // 整车没有任何一条路线能覆盖 ⇒ 不出发。这不是"再猜一个起点"，是真的没路。
+         return Result.fail("没有任何一端能搜出覆盖整车的路线：" + why);
+      }
 
-      // ② 按弧长串链：最小 = 车尾，最大 = 车头
-      TravellingPoint tail = null; TravellingPoint head = null;
-      double sMin = Double.POSITIVE_INFINITY; double sMax = Double.NEGATIVE_INFINITY;
+      // ===== 阶段二：用这条完整路线的 s 轴量出真正的两端 =====
+      TravellingPoint endMin = null; TravellingPoint endMax = null;
+      double sMin0 = Double.POSITIVE_INFINITY; double sMax0 = Double.NEGATIVE_INFINITY;
       for (TravellingPoint p : pts) {
-         if (p == null || p.edge == null) return Result.fail("有转向架没有边，不能定前后端");
-         double s = r0.route.sOf(p.edge, p.position);
-         if (!Double.isFinite(s)) return Result.fail("有转向架不在这条路线上，不能定前后端");
-         if (s < sMin) { sMin = s; tail = p; }
-         if (s > sMax) { sMax = s; head = p; }
+         if (p == null || p.edge == null) continue;
+         double s = probe.route.sOf(p.edge, p.position);
+         if (!Double.isFinite(s)) continue;                 // 阶段一已保证不会发生
+         if (s < sMin0) { sMin0 = s; endMin = p; }
+         if (s > sMax0) { sMax0 = s; endMax = p; }
       }
-      if (tail == null) return Result.fail("串链失败：一根都没排上");
+      if (endMin == null) return Result.fail("一根转向架都排不上，无法定两端");
 
-      // ③ 已经是从车尾起搜的 ⇒ 直接复用 r0
-      if (tail == pts.get(0) || sMax - sMin < 0.01) return withStart(r0, tail);
+      // ===== 阶段三：两端各按①②③验一次，决定哪端当后端 =====
+      // 探路结果如果起点正是最小端，直接复用，省一次寻路
+      Result a = samePoint(probeSeed, endMin)
+         ? validate(probe, endMin, pts, "A")
+         : tryEnd(g, endMin, station, expectName, maxDistance, pts, "A");
+      Result b = samePoint(endMax, endMin)
+         ? null : tryEnd(g, endMax, station, expectName, maxDistance, pts, "B");
 
-      Result r1 = searchFrom(g, tail, station, expectName, maxDistance);
-      if (!r1.ok || r1.route == null) return r1;
-
-      // ④ 校验车头也覆盖到
-      double sHead = r1.route.sOf(head.edge, head.position);
-      if (!Double.isFinite(sHead)) {
-         return Result.fail("从车尾起搜后覆盖不到车头，拒绝出发（不猜）");
+      boolean okA = a != null && a.ok;
+      boolean okB = b != null && b.ok;
+      if (okA && okB) {
+         // 两端都合格（环线，站两边都能到）：优先保持上一段那一端，其次取更短的
+         if (preferred != null) {
+            if (samePoint(a.startPoint, preferred)) return a;
+            if (samePoint(b.startPoint, preferred)) return b;
+         }
+         Result pick = a.distance <= b.distance ? a : b;
+         HexieTrain.LOGGER.info("[nav] 两端都合格（环线）⇒ 取{}端 距站 {} vs {}", new Object[]{
+            pick == a ? "A" : "B", String.format("%.1f", a.distance), String.format("%.1f", b.distance)});
+         return pick;
       }
-      return withStart(r1, tail);
+      if (okA) return a;
+      if (okB) return b;
+      // 两端都不合格 ⇒ 停手，把两边各自的原因都写清楚。绝不"那就照旧往前开"
+      return Result.fail("两端都不合格 ｜ A端：" + (a == null ? "-" : a.note)
+         + " ｜ B端：" + (b == null ? "-" : b.note));
    }
 
-   private static boolean covers(Result r, TravellingPoint otherEnd) {
-      if (r == null || !r.ok || r.route == null) return false;
-      if (otherEnd == null || otherEnd.edge == null) return false;
-      return r.route.legOf(otherEnd.edge) != null;
+   /** 两端都试的旧签名（保留给不需要偏好端的调用）。 */
+   public static Result searchTrainWide(TrackGraph g, Train train, GlobalStation station, String expectName,
+                                        double maxDistance, List<TravellingPoint> pts) {
+      return searchTrainWide(g, train, station, expectName, maxDistance, pts, null);
+   }
+
+   /** 第一根算不出弧长的转向架下标；-1 = 全车都在路线上。 */
+   private static int firstUncovered(Result r, List<TravellingPoint> pts) {
+      if (r == null || !r.ok || r.route == null) return 0;
+      for (int i = 0; i < pts.size(); i++) {
+         TravellingPoint p = pts.get(i);
+         if (p == null || p.edge == null) continue;
+         if (!Double.isFinite(r.route.sOf(p.edge, p.position))) return i;
+      }
+      return -1;
+   }
+
+   private static boolean samePoint(TravellingPoint a, TravellingPoint b) {
+      if (a == null || b == null || a.edge == null || b.edge == null) return false;
+      return a.edge == b.edge && Math.abs(a.position - b.position) < 0.05;
+   }
+
+   /** 以 {@code start} 当<b>后端</b>搜一次，再验①②③。 */
+   private static Result tryEnd(TrackGraph g, TravellingPoint start, GlobalStation station,
+                                String expectName, double maxDistance, List<TravellingPoint> pts, String tag) {
+      Result r = searchFrom(g, start, station, expectName, maxDistance);
+      if (r == null || !r.ok || r.route == null) {
+         return Result.fail("寻路失败：" + (r == null ? "无结果" : r.note));
+      }
+      return validate(r, start, pts, tag);
+   }
+
+   /**
+    * 三条硬条件。<b>这是唯一的判定处，不许有第二条路。</b>
+    * 合格：ok=true，distance 改成从<b>领先端</b>量的距站。
+    * 不合格：ok=false，note 只说原因（哪一端由上层拼）。
+    */
+   private static Result validate(Result r, TravellingPoint start, List<TravellingPoint> pts, String tag) {
+      double sMin = Double.POSITIVE_INFINITY; double sMax = Double.NEGATIVE_INFINITY;
+      int measured = 0; int badIdx = -1;
+      for (int i = 0; i < pts.size(); i++) {
+         TravellingPoint p = pts.get(i);
+         if (p == null || p.edge == null) continue;
+         double s = r.route.sOf(p.edge, p.position);
+         if (!Double.isFinite(s)) { badIdx = i; break; }      // 条件①
+         measured++;
+         if (s < sMin) sMin = s;
+         if (s > sMax) sMax = s;
+      }
+      if (badIdx >= 0) {
+         TravellingPoint p = pts.get(badIdx);
+         return Result.fail(String.format("第%d根转向架不在这条路线上（边[%s -> %s] pos=%.2f）",
+            badIdx + 1, nodeStr(p.edge.node1), nodeStr(p.edge.node2), p.position));
+      }
+      if (measured == 0) return Result.fail("一根转向架都排不上");
+      if (sMin < -TAIL_EPS) {                                  // 条件②
+         return Result.fail(String.format("起点后方还有转向架（s最小=%.2f，车体会被路线截断）", sMin));
+      }
+      if (!Double.isFinite(r.route.stationS)) return Result.fail("车站没落在路线上");
+      if (r.route.stationS <= sMax + LEAD_EPS) {                // 条件③
+         return Result.fail(String.format("车站不在领先端之外（站s=%.2f 领先端s=%.2f）",
+            r.route.stationS, sMax));
+      }
+      Result tagged = withStart(r, start);
+      double lead = r.route.stationS - sMax;
+      HexieTrain.LOGGER.info("[nav] {}端合格：转向架{}根全在路线上 s∈[{},{}] 站s={} ⇒ 领先端距站 {}", new Object[]{
+         tag, measured, String.format("%.2f", sMin), String.format("%.2f", sMax),
+         String.format("%.1f", r.route.stationS), String.format("%.1f", lead)});
+      return new Result(true, tagged.towardNode2, r.route, lead, r.edges, tag + "端", start);
    }
 
    /**

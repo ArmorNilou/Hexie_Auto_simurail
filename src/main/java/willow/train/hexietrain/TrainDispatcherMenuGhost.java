@@ -83,7 +83,9 @@ public class TrainDispatcherMenuGhost extends GhostItemMenu<TrainDispatcherBlock
    protected TrainDispatcherBlockEntity createOnClient(RegistryFriendlyByteBuf buf) {
       BlockPos pos = buf.readBlockPos();
       ClientLevel level = Minecraft.getInstance().level;
-      return level != null && level.getBlockEntity(pos) instanceof TrainDispatcherBlockEntity be ? be : null;
+      TrainDispatcherBlockEntity found = level != null && level.getBlockEntity(pos) instanceof TrainDispatcherBlockEntity be ? be : null;
+      HexieTrain.LOGGER.info("[ui] 客户端建菜单 pos={} be={}", pos.toShortString(), found == null ? "null" : "ok");
+      return found;
    }
 
    protected ItemStackHandler createGhostInventory() {
@@ -133,7 +135,19 @@ public class TrainDispatcherMenuGhost extends GhostItemMenu<TrainDispatcherBlock
          });
       }
 
-      this.addPlayerSlots(8, 146);
+      // 不用 Create 的 addPlayerSlots：它的内部偏移不可见，客户端与服务端槽坐标可能不一致。
+      // 这里逐格显式写死，和 TrainDispatcherMenu（服务端）保持完全相同的数字。
+      for (int row = 0; row < 3; row++) {
+         for (int col = 0; col < 9; col++) {
+            this.addSlot(new Slot(playerInventory, col + row * 9 + 9, 8 + col * 18, 146 + row * 18));
+         }
+      }
+      for (int col = 0; col < 9; col++) {
+         this.addSlot(new Slot(playerInventory, col, 8 + col * 18, 204));
+      }
+      HexieTrain.LOGGER.info("[ui] addSlots 完成 container={} slots={} ghost={}",
+         this.container == null ? "null" : this.container.getContainerSize(), this.slots.size(),
+         this.ghostInventory == null ? "null" : this.ghostInventory.getSlots());
    }
 
    protected void saveData(TrainDispatcherBlockEntity be) {

@@ -44,9 +44,14 @@ public final class HexieRegistries {
    public static final DeferredRegister<MenuType<?>> MENUS = DeferredRegister.create(Registries.MENU, "hexie_auto_simuroute");
    public static final DeferredHolder<MenuType<?>, MenuType<TrainDispatcherMenuGhost>> TRAIN_DISPATCHER_MENU = MENUS.register(
       "train_dispatcher",
-      () -> IMenuTypeExtension.create((id, inv, buf) -> new TrainDispatcherMenuGhost(null, id, inv, buf))
+      () -> IMenuTypeExtension.create((id, inv, buf) -> new TrainDispatcherMenuGhost(HexieRegistries.menuType(), id, inv, buf))
    );
    public static final DeferredRegister<CreativeModeTab> TABS = DeferredRegister.create(Registries.CREATIVE_MODE_TAB, "hexie_auto_simuroute");
+   /** 供菜单工厂在运行时取类型，避开初始化器自引用。 */
+   public static MenuType<TrainDispatcherMenuGhost> menuType() {
+      return TRAIN_DISPATCHER_MENU.get();
+   }
+
    public static final DeferredHolder<CreativeModeTab, CreativeModeTab> TAB = TABS.register(
       "main",
       () -> CreativeModeTab.builder(Row.TOP, 0)
