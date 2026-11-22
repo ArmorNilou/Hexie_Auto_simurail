@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import net.createmod.catnip.data.Couple;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -94,6 +95,18 @@ public final class BogeySteering {
    /** 让权日志：每个位置只打一次 */
    private final Set<BlockPos> yieldLogged = new HashSet<>();
 
+   /** 喂 currentPath 时每个位置只打一次 */
+   private final Set<BlockPos> pathLogged = new HashSet<>();
+
+   /** currentPath 写入失败只报一次 */
+   private boolean warnedPath = false;
+
+   /** 每根轴的横向翻转校准：+1 原样、−1 取反。靠过节点命中/失手闭环学出来，不靠猜。 */
+   private final Map<BlockPos, Integer> frameFlip = new HashMap<>();
+
+   /** 撕裂日志：每个位置只报一次 */
+   private final Set<BlockPos> tearLogged = new HashSet<>();
+
    /** TrackSwitch 的三个出口字段（protected）只反射一次 */
    private static final Map<String, Field> SWITCH_FIELDS = new ConcurrentHashMap<>();
 
@@ -109,6 +122,8 @@ public final class BogeySteering {
       /** 已经真正写进转向架的值，避免每 tick 重复写同一个数 */
       int written = 0;
       int hold = 0;
+      /** 过岔锁：>0 表示判定已经锁定，这拍只续写不重算（防最后几拍符号翻掉） */
+      int locked = 0;
       TrackEdge lastEdge = null;
       /** 上一次判定想要的下一段边（跨节点时用来核对到底走了哪股道） */
       TrackEdge wanted = null;
@@ -132,6 +147,11 @@ public final class BogeySteering {
          }
       }
       try {
+      try {
+         detectTear(level, roster, route);
+      } catch (Throwable t) {
+         HexieTrain.LOGGER.warn("[tear] 撕裂检测异常 {}", t.toString());
+      }
          oneWriterPerGroup(level, anchor, roster, route);
       } catch (Throwable t) {
          HexieTrain.LOGGER.warn("[steer] 组内让权异常 {}", t.toString());
@@ -155,6 +175,115 @@ public final class BogeySteering {
     * <p>所以这里把"写值权"收给组内**沿路线最靠前**（{@link RailCache.Route#sOf} 最大）的那一个转向架，
     * 同组其他转向架一律清零，让它去继承。
     */
+   /**
+    * 撕裂检测：哪根绑定轴的边**不在这条路线上**，说明车已经跨在两股道上（岔口被劈开）。
+    *
+    * <p>2026-11-22 22:20 日志：78 次过节点失手 1 次之后，``连续 40 拍绑定 4 根、只解析出 3 根``，
+    * 之后 48 次规划全是 ``第 1 根算不出弧长`` —— 车劈开以后，任何一条路线都不可能覆盖整车，
+    * 调度器按"不猜"的规矩永远拒绝出发。所以这一行日志是"车劈了"的唯一直接证据，必须有。
+    */
+   private void detectTear(ServerLevel level, BogeyRoster roster, RailCache.Route route) {
+      for (BlockPos pos : roster.positions()) {
+         if (!level.hasChunkAt(pos)) {
+            continue;
+         }
+         if (!(level.getBlockEntity(pos) instanceof PhysicsBogeyBlockEntity b)) {
+            continue;
+         }
+         TravellingPoint tp;
+         try {
+            tp = b.getAxle(true).getTrackPoint();
+         } catch (Throwable t) {
+            continue;
+         }
+         if (tp == null || tp.edge == null || route.legOf(tp.edge) != null) {
+            this.tearLogged.remove(pos);
+            continue;
+         }
+         if (this.tearLogged.add(pos)) {
+            HexieTrain.LOGGER.warn("[tear] {} 这根轴不在路线上（edgeLen={} ）⇒ 车跨在两股道上，规划必然失败",
+               pos.toShortString(), String.format("%.2f", tp.edge.getLength()));
+         }
+      }
+   }
+
+   /**
+    * 把"下一步走哪条边"喂给转向架的 `currentPath` —— 这才是 Simurail 的**导航接口**。
+    *
+    * <p>`PhysicsBogeyAxle.control()` 里：
+    * ```
+    *   if(nextPoint == null || nextPoint.edge == null) {
+    *       if(!currentPath.isEmpty()) return navigate(point, currentPath).apply(graph, pair);
+    *       else                       return steer(point).apply(graph, pair);
+    *   }
+    * ```
+    * 有 currentPath 时优先 navigate()，**三态开关根本不参与**。
+    * 最前面那根轴永远没有"前一根轴"可跟，所以它一定走这条分支 —— 正好是要选股道的那一根。
+    *
+    * <p>navigate() 的匹配条件是：
+    * ```
+    *   if(candEdge.node1 != target.getFirst() && candEdge.node2 != target.getSecond()) continue;
+    * ```
+    * 是 `&&` 不是 `||`。return 的条件是"node1 相等 **或** node2 相等"。
+    * 同一节点出发的候选边**以下游节点为键**（`getConnectionsFrom` 的 map key），所以
+    * 只要 `second` = 目标边的下游节点，就能精确挑出那一条；
+    * 而 `first` 也必须填成同一个下游节点，才能让**别的**候选被跳过
+    * （别的候选的 node1 都是上游节点：若 first 填上游节点，则 node1 相等 ⇒ 条件为假 ⇒ 会误命中）。
+    * 所以传 `Couple(dest, dest)`。
+    */
+   private void feedPath(PhysicsBogeyBlockEntity bogey, TrackEdge next, TrackNode junction) {
+      try {
+         if (bogey == null || next == null || junction == null) {
+            return;
+         }
+         TrackNode dest = (next.node1 == junction) ? next.node2 : next.node1;
+         if (dest == null) {
+            return;
+         }
+         List<Couple<TrackNode>> path = List.of(Couple.create(dest, dest));
+         if (this.pathLogged.add(bogey.getBlockPos())) {
+            HexieTrain.LOGGER.info("[path] {} 喂 currentPath：dest={} 目标边={}m（导航优先，steer 只兜底）",
+               bogey.getBlockPos().toShortString(), dest.getLocation().getLocation(),
+               String.format("%.2f", next.getLength()));
+         }
+         PhysicsBogeyAxle front = bogey.getAxle(true);
+         PhysicsBogeyAxle back = bogey.getAxle(false);
+         if (front != null) {
+            front.setCurrentPath(path);
+         }
+         if (back != null) {
+            back.setCurrentPath(path);
+         }
+      } catch (Throwable t) {
+         if (!this.warnedPath) {
+            this.warnedPath = true;
+            HexieTrain.LOGGER.warn("[steer] 写 currentPath 失败 {}", t.toString());
+         }
+      }
+   }
+
+   /** 不在导航里就把 currentPath 清空，别让旧路径继续指挥。 */
+   private void clearPath(ServerLevel level, BlockPos pos) {
+      try {
+         if (!level.hasChunkAt(pos)) {
+            return;
+         }
+         if (!(level.getBlockEntity(pos) instanceof PhysicsBogeyBlockEntity bogey)) {
+            return;
+         }
+         List<Couple<TrackNode>> empty = List.of();
+         PhysicsBogeyAxle front = bogey.getAxle(true);
+         PhysicsBogeyAxle back = bogey.getAxle(false);
+         if (front != null) {
+            front.setCurrentPath(empty);
+         }
+         if (back != null) {
+            back.setCurrentPath(empty);
+         }
+      } catch (Throwable ignored) {
+      }
+   }
+
    private void oneWriterPerGroup(ServerLevel level, BlockPos anchor, BogeyRoster roster, RailCache.Route route) {
       Map<PhysicsBogeyGroup, List<BlockPos>> byGroup = new HashMap<>();
       Map<BlockPos, Double> sOf = new HashMap<>();
@@ -218,6 +347,7 @@ public final class BogeySteering {
    public void releaseAll(ServerLevel level, BlockPos anchor, BogeyRoster roster) {
       for (BlockPos pos : roster.positions()) {
          State st = this.states.computeIfAbsent(pos, k -> new State());
+         clearPath(level, pos);
          st.side = 0;
          st.hold = 0;
          write(level, anchor, pos, st);
@@ -251,6 +381,13 @@ public final class BogeySteering {
       if (st.lastEdge != null && !RailCache.sameLink(st.lastEdge, tp.edge)) {
          if (st.wanted != null) {
             boolean hit = RailCache.sameLink(st.wanted, tp.edge);
+            if (!hit) {
+               // 闭环校准：这根轴这次算的号跟 Simurail 选的不一致 ⇒ 记住"这根轴的横向要取反"。
+               // 下次直接用它，不再每拍靠 trackFrame 现算（那玩意儿会在 trackSegment.reverse() 时翻）。
+               int cur = this.frameFlip.getOrDefault(pos, 1);
+               this.frameFlip.put(pos, -cur);
+               HexieTrain.LOGGER.warn("[steer] {} 过岔失手 ⇒ 该轴横向校准翻成 {}（下次按这个打）", pos.toShortString(), -cur);
+            }
             HexieTrain.LOGGER.info(
                "[steer] {} 过节点 实际上了={} {} ｜ 想要={} {} ⇒ {}",
                pos.toShortString(),
@@ -261,6 +398,8 @@ public final class BogeySteering {
             dumpCandidates(axle, st.lastEdge, tp.edge, pos);
             st.wanted = null;
          }
+         st.locked = 0;
+         st.kept = false;
          st.hold = st.side == 0 ? 0 : HOLD_TICKS;
       }
       st.lastEdge = tp.edge;
@@ -295,7 +434,25 @@ public final class BogeySteering {
          return;
       }
 
-      st.side = sideOf(next, lateral, pos);
+      // ===== 过岔锁：进入 leg 末端 3 米就**只判一次**，之后锁住只续写 =====
+      // 2026-11-22 22:20 日志：78 次过节点里 1 次失手，就是最后几拍 trackFrame.lateral
+      // 被 trackSegment.reverse() 翻了一次，我们重算出来的号跟 Simurail 读的那一刻不一致。
+      // 岔口前 3 米的一次判定，比"每拍重算"更接近它读到的状态。
+      if (st.locked > 0) {
+         st.locked--;
+         write(level, anchor, pos, st);
+         return;
+      }
+      double remain = Double.NaN;
+      try {
+         remain = route.remainingToLegEnd(tp.edge, tp.position);
+      } catch (Throwable ignored) {
+      }
+
+      st.side = sideOf(next, lateral, pos) * this.frameFlip.getOrDefault(pos, 1);
+      if (Double.isFinite(remain) && remain <= 3.0) {
+         st.locked = 10;   // 3 米内锁 10 拍：足够跨过节点
+      }
       st.wanted = next;
       st.note = (next.isTurn() ? "弯" : "直") + String.format(" %.2fm", next.getLength());
 
@@ -305,6 +462,7 @@ public final class BogeySteering {
       //   if(sw != null) { target = sw.selectTarget(pair.getSecond()); if(target != null) return target; }
       // 也就是说：有岔道方块时，写多少 steer 都没用，走哪股由那个方块的 state 决定。
       // 所以必须在过岔之前把方块扳到我们要的那一侧。
+      feedPath(bogey, next, junction);   // ← 让导航决定股道（currentPath → navigate）
       throwSwitch(level, axle.getTrackGraph(), tp, next, pos);
 
       st.kept = false;
@@ -459,6 +617,7 @@ public final class BogeySteering {
    }
 
    private void release(State st, ServerLevel level, BlockPos anchor, BlockPos pos) {
+      clearPath(level, pos);
       st.side = 0;
       st.hold = 0;
       write(level, anchor, pos, st);
