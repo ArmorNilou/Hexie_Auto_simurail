@@ -8,6 +8,7 @@ import com.crystaelix.simurail.content.track_switch.TrackSwitchBlockEntity;
 import com.crystaelix.simurail.content.track_switch.TrackSwitchState;
 import com.simibubi.create.content.trains.entity.TravellingPoint;
 import com.simibubi.create.content.trains.graph.TrackEdge;
+import com.simibubi.create.content.trains.graph.TrackGraph;
 import com.simibubi.create.content.trains.graph.TrackNode;
 import com.simibubi.create.content.trains.graph.TrackNodeLocation;
 import com.simibubi.create.content.trains.signal.TrackEdgePoint;
@@ -191,16 +192,20 @@ public final class BogeySteering {
          return;
       }
 
+      // 岔口节点 = 当前边和目标边共用的那个节点（不看 node1/node2 的编号，只用几何身份）
+      TrackNode junction = (next.node1 == tp.edge.node1 || next.node1 == tp.edge.node2)
+         ? next.node1 : next.node2;
+
       // ===== 判据用的"行进右"必须**全车一致**，不能取每根转向架自己的 trackFrame.lateral =====
-      // 2026-11-22 21:10 实机日志（1.2.5）钉死了这件事：
-      //   20481031 打【行进右】(+) → 过节点 实际上了=弯 38.56m ⇒ 命中
-      //   20481034 打【行进左】(−) → 过节点 实际上了=直 14.00m ⇒ ❌
-      // 同一条目标边、同一个岔口，一根打 + 走对了、一根打 − 走了直股
-      // ⇒ 两根轴要的是**同一个符号**，而它们算出相反符号，是因为各自 trackFrame 的朝向相反
-      //   （trackFrame 会被 trackAxleFrame.direction 翻正，而那是每根转向架自己的朝向）。
-      // ⇒ Simurail 在选择那一刻用的是**轨道方向的横向**，不是转向架的朝向。
-      // 所以这里改成用"行进方向 × 上"算行进右，全车四根转向架必然算出同一个符号。
-      Vector3dc lateral = travelRightOf(tp);
+      // 2026-11-22 21:10/21:19 两次实机日志钉死了这件事：
+      //   20481031 打(+1) → 过节点 实际上了=弯 38.56m ⇒ 命中
+      //   20481034 打(−1) → 过节点 实际上了=直 14.00m ⇒ ❌
+      // 同一条目标边、同一个岔口，两根轴要的却是同一个符号 ⇒ 它们算出相反符号是错的。
+      // 根因：`trackFrame.lateral` 会被 trackAxleFrame.direction 翻正，那是**每根转向架自己的朝向**；
+      // 而 1.2.6 试过的 `edge.getDirection(0/1)` 也不行 —— 同一条轨在 Create 里正反是两个边对象，
+      // node1/node2 编号可以互相颠倒，`alongEdge` 判断一样会反。
+      // 唯一没有歧义的写法：**从轴当前世界位置指向岔口节点**，那就是行进方向。
+      Vector3dc lateral = travelRightOf(axle, tp, junction);
       if (lateral == null) {
          keepOrRelease(st, level, anchor, pos, "算不出行进方向");
          return;
@@ -405,20 +410,31 @@ public final class BogeySteering {
    // ================================================================ 判据
 
    /**
-    * 行进右 = 行进方向 × 上。**全车一致**：只看这根轴走在哪条边、朝哪一头，
-    * 不看转向架自己的朝向（那个会被 trackAxleFrame.direction 翻正，各转向架可能相反）。
+    * 行进右 = 归一化(岔口节点位置 − 轴当前位置) × 上。
+    *
+    * <p><b>为什么不用 edge.getDirection()</b>：Create 里同一条轨正反是**两个边对象**，
+    * node1/node2 可以互相颠倒，`p.node1 == p.edge.node1` 这种判断照样会翻；
+    * 而"指向即将通过的节点"没有任何歧义，全车四根转向架必然算出同一个向量。
     */
-   private static Vector3dc travelRightOf(TravellingPoint p) {
-      if (p == null || p.edge == null) {
+   private static Vector3dc travelRightOf(PhysicsBogeyAxle axle, TravellingPoint p, TrackNode junction) {
+      if (axle == null || p == null || p.edge == null || junction == null) {
          return null;
       }
       try {
-         boolean alongEdge = (p.node1 == p.edge.node1);
-         Vec3 d = alongEdge ? p.edge.getDirection(false) : p.edge.getDirection(true).scale(-1.0);
-         if (d == null || d.lengthSqr() < 1.0E-8) {
+         TrackGraph g = axle.getTrackGraph();
+         if (g == null) {
             return null;
          }
-         Vec3 r = d.cross(new Vec3(0.0, 1.0, 0.0));
+         Vec3 here = p.getPosition(g);
+         Vec3 there = junction.getLocation().getLocation();
+         if (here == null || there == null) {
+            return null;
+         }
+         Vec3 d = there.subtract(here);
+         if (d.lengthSqr() < 1.0E-8) {
+            return null;
+         }
+         Vec3 r = d.normalize().cross(new Vec3(0.0, 1.0, 0.0));
          if (r.lengthSqr() < 1.0E-8) {
             return null;
          }
