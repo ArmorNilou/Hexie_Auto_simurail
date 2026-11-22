@@ -49,6 +49,9 @@ public final class RailSearch {
    /** 剪枝日志限流：每张图最多记 8 条，避免每秒刷屏 */
    private static int pruneLogs = 0;
 
+   /** 反向进站日志限流 */
+   private static int reverseLogs = 0;
+
    private RailSearch() {}
 
    /** 与 TrackEdge.canTravelTo 相同的阈值，cos(θ) > 0.875 ⇔ θ < 约 29° */
@@ -382,7 +385,50 @@ public final class RailSearch {
       // 单端起点：只从本车出发；两个初始方向由 run() 一起入队，岔口/支线随便走。
       // 只搜这一个方向：搜不到上面那条准入边就报失败，绝不许停在别的边点上。
       if (start.edge == null) return Result.fail("起点没有边");
-      return run(g, station, start, arrival, posOnArrival, max);
+
+      // ===== 先按站点自己的准入方向搜（a→b）=====
+      Result forward = run(g, station, start, arrival, posOnArrival, max);
+      if (forward != null && forward.ok) {
+         return forward;
+      }
+
+      // ===== 正向进站搜不到 ⇒ 再试「反向进站」（b→a）=====
+      // 站点只声明了一个准入方向（isPrimary = edgeLocation.second），
+      // 车在线路另一端时，物理上只能<b>倒着进站</b>。原来的代码里 goal 只认
+      // `k.enter == arrival.node1`，于是这种段子会一路搜穷（日志特征：
+      // 「扩张 21 次，可达状态 21 个」——整个连通块都走完了还是对不上），
+      // 然后报「搜不到驶入站点的边」。这不是没路，是进站方向被焊死了一个。
+      //
+      // 做法：把准入边换成它的镜像 b→a，并把站点位置翻到镜像边上（len − pos），
+      // run() 内部逻辑一个字不用改 —— 它眼里站点就是"从 b 侧进站"。
+      TrackEdge arrivalRev = arrivalRev(g, arrival);
+      String whyRev = "没有镜像准入边";
+      if (arrivalRev != null) {
+         double lenRev = CreateApi.length(arrivalRev);
+         double posRev = lenRev - posOnArrival;
+         if (Double.isFinite(posRev) && lenRev > 0.0) {
+            Result back = run(g, station, start, arrivalRev, posRev, max);
+            if (back != null && back.ok) {
+               if (reverseLogs++ < 8) {
+                  HexieTrain.LOGGER.info("[nav] 反向进站：{} 的准入方向 a→b 搜不到，改从 b→a 进（距站 {}）",
+                     station.name, String.format("%.1f", back.distance));
+               }
+               return back;
+            }
+            whyRev = back == null ? "无结果" : back.note;
+         }
+         else {
+            whyRev = "镜像站点位置算不出来";
+         }
+      }
+      return Result.fail((forward == null ? "无结果" : forward.note) + " ｜ 反向进站：" + whyRev);
+   }
+
+   /** 站点准入边的镜像（b→a）。没有就返回 null，不猜。 */
+   private static TrackEdge arrivalRev(TrackGraph g, TrackEdge arrival) {
+      if (g == null || arrival == null || arrival.node1 == null || arrival.node2 == null) return null;
+      Map<TrackNode, TrackEdge> outB = CreateApi.connections(g, arrival.node2);
+      return outB == null ? null : outB.get(arrival.node1);
    }
 
    // ================================================================ 单方向搜索
@@ -491,10 +537,20 @@ public final class RailSearch {
       }
 
       if (goal == null) {
+         // 失败时把**可达集合**也打出来：只有"被弹掉的样例"看不出是"剪错"还是"这段真不通"。
+         // 有了这张表就能直接对比站点准入边在不在里面、断在哪个节点。
+         StringBuilder reach = new StringBuilder();
+         int shown = 0;
+         for (Key k : dist.keySet()) {
+            if (shown++ >= 12) { reach.append(" …共 ").append(dist.size()).append(" 条"); break; }
+            if (reach.length() > 0) reach.append(" | ");
+            reach.append(String.format("%.0fm@%s", k.edge == null ? -1 : k.edge.getLength(), nodeStr(k.enter)));
+         }
          return Result.fail("搜不到驶入站点的边（上限 " + String.format("%.0f", max) + "，扩张 " + scanned
-            + " 次，可达状态 " + dist.size() + " 个，几何弹出 " + prunedSmooth + " 条 " + pruned + "）");
+            + " 次，可达状态 " + dist.size() + " 个，几何弹出 " + prunedSmooth + " 条 " + pruned
+            + "，准入边 " + nodeStr(arrival.node1) + "→" + nodeStr(arrival.node2)
+            + "，可达=[" + reach + "]）");
       }
-
       ArrayList<Key> path = new ArrayList<>();
       Key w = goal;
       int guard = 0;
