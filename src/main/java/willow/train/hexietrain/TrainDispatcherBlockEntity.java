@@ -1,5 +1,6 @@
 package willow.train.hexietrain;
 
+import com.crystaelix.simurail.api.track.TrackTypeOverrides;
 import com.crystaelix.simurail.content.bogey.PhysicsBogeyBlockEntity;
 import com.simibubi.create.AllDataComponents;
 import com.simibubi.create.AllItems;
@@ -24,6 +25,8 @@ import com.simibubi.create.content.trains.signal.SignalBlockEntity;
 import com.simibubi.create.content.trains.signal.SignalBoundary;
 import com.simibubi.create.content.trains.signal.SignalBlockEntity.SignalState;
 import com.simibubi.create.content.trains.station.GlobalStation;
+import com.simibubi.create.content.trains.track.ITrackBlock;
+import com.simibubi.create.content.trains.track.TrackMaterial;
 import com.simibubi.create.foundation.blockEntity.behaviour.BlockEntityBehaviour;
 import com.simibubi.create.foundation.blockEntity.behaviour.ValueBoxTransform.Sided;
 import dev.ryanhcode.sable.Sable;
@@ -3515,6 +3518,121 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
       return false;
    }
 
+   /**
+    * 车"不在轨道上"时把每一根绑定转向架的**轨型账**打出来。
+    *
+    * <p>为什么盯轨型：{@code PhysicsBogeyAxle} 判断"这根轴在不在轨道上"走的是
+    * {@code TrackSegmentHelper.findBlockTrackSegment}，里面的筛子是
+    * <pre>
+    *   TrackType type = TrackTypeOverrides.getTrackType(block.getMaterial());
+    *   if (!validTypes.contains(type) &amp;&amp; !TrackTypeOverrides.isUniversal(type)) continue;
+    * </pre>
+    * 而 {@code validTypes} 来自转向架自己的 {@code BogeySubtype.trackTypes()}。
+    * 和谐把 {@code hexie:standard} 注册成**独立轨型**（{@code HeXieSimurailCompat.registerTrackType()}，
+    * 参数 width=1.509375 / height=0.75），并把该轨型的默认转向架设成 CW2
+    * （{@code BogeyType.setDefault(HEXIE_STANDARD, false, CW2.type())}）。
+    * 所以绑在车上的转向架只要没接受这个轨型，它在这条轨上就永远找不到轨道，
+    * 我们这边的表现就是"物理结构不在轨道上"。
+    *
+    * <p><b>外轨超高不在这条判据上</b>：超高只存在于和谐自己的
+    * {@code TrackRailSurface} / {@code TrackGeometry.Sample.cantRadians} /
+    * {@code VehiclePose.rollRadians}（车体姿态）里，不写进 Create 的轨道图；
+    * 而 Create 的 {@code ITrackBlock.getUpNormal / getElevationAtCenter} 和谐也**没有覆盖**。
+    */
+   private void logTrackTypeDiagnosis() {
+      if (!(this.level instanceof ServerLevel sl)) {
+         return;
+      }
+      try {
+         for (BlockPos pos : this.roster.positions()) {
+            if (!sl.hasChunkAt(pos)) {
+               HexieTrain.LOGGER.info("[presence][轨型] {} 区块未加载，跳过", pos.toShortString());
+               continue;
+            }
+            if (!(sl.getBlockEntity(pos) instanceof PhysicsBogeyBlockEntity b)) {
+               HexieTrain.LOGGER.info("[presence][轨型] {} 不是物理转向架（可能已被拆）", pos.toShortString());
+               continue;
+            }
+
+            String edges;
+            try {
+               TravellingPoint f = b.getAxle(true).getTrackPoint();
+               TravellingPoint r = b.getAxle(false).getTrackPoint();
+               edges = (f == null ? "null" : (f.edge == null ? "无轨" : "有轨"))
+                  + "/" + (r == null ? "null" : (r.edge == null ? "无轨" : "有轨"));
+            } catch (Throwable t) {
+               edges = "异常:" + t.getClass().getSimpleName();
+            }
+
+            String accepted;
+            String typeName;
+            try {
+               accepted = trackTypeNames(b.getOptions().type.trackTypes());
+               typeName = String.valueOf(b.getOptions().type);
+            } catch (Throwable t) {
+               accepted = "异常:" + t.getClass().getSimpleName();
+               typeName = "?";
+            }
+
+            TrackMaterial material = this.materialUnder(sl, pos);
+            String here = material == null ? "脚下没找到轨道方块" : describeMaterial(material);
+
+            HexieTrain.LOGGER.info(
+               "[presence][轨型] {} 轴={} 转向架={} 接受=[{}] 脚下={}",
+               pos.toShortString(), edges, typeName, accepted, here
+            );
+         }
+      } catch (Throwable t) {
+         HexieTrain.LOGGER.warn("[presence][轨型] 诊断异常 {}", t.toString());
+      }
+   }
+
+   /** 在转向架位置附近找脚下的轨道方块（转向架在轨面之上，斜弯上不一定正好下方）。 */
+   private TrackMaterial materialUnder(ServerLevel level, BlockPos pos) {
+      BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+      for (int dy = 0; dy >= -2; dy--) {
+         for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+               p.set(pos.getX() + dx, pos.getY() + dy, pos.getZ() + dz);
+               try {
+                  if (!level.isLoaded(p)) {
+                     continue;
+                  }
+                  if (level.getBlockState(p).getBlock() instanceof ITrackBlock tb) {
+                     return tb.getMaterial();
+                  }
+               } catch (Throwable ignored) {
+               }
+            }
+         }
+      }
+      return null;
+   }
+
+   private static String describeMaterial(TrackMaterial material) {
+      try {
+         TrackMaterial.TrackType type = TrackTypeOverrides.getTrackType(material);
+         String universal = type != null && TrackTypeOverrides.isUniversal(type) ? "(通用)" : "";
+         return material.id + " 轨型=" + (type == null ? "null" : type.id) + universal;
+      } catch (Throwable t) {
+         return material.id + " 轨型读取异常:" + t.getClass().getSimpleName();
+      }
+   }
+
+   private static String trackTypeNames(Set<TrackMaterial.TrackType> set) {
+      if (set == null || set.isEmpty()) {
+         return "空";
+      }
+      StringBuilder sb = new StringBuilder();
+      for (TrackMaterial.TrackType t : set) {
+         if (sb.length() > 0) {
+            sb.append(", ");
+         }
+         sb.append(t == null ? "null" : String.valueOf(t.id));
+      }
+      return sb.toString();
+   }
+
    private void syncTrainPresence() {
       if (this.level != null && !this.level.isClientSide) {
          boolean shouldExist = !this.scheduleSlot.isEmpty() && this.scheduleSlot.getItem() instanceof ScheduleItem;
@@ -3529,6 +3647,11 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             // 车整个在轨道外：虚拟车代表不了它（Train 只能活在轨道边上），
             // 而且 derailed=true 的虚拟车 Create 不会自动销毁 ⇒ 它会一直占着一段区间。
             // 连续两次（约 2 秒）确认才动手，避免跨边那一拍的抖动把车误注销。
+            if (this.offTrackTicks == 0) {
+               // 第一次丢轨就把"轨型账"打出来：丢轨的绝大多数原因是转向架接受的轨型
+               // 里没有脚下这条轨的轨型（和谐是独立轨型 hexie:standard），不是几何。
+               this.logTrackTypeDiagnosis();
+            }
             if (++this.offTrackTicks >= 2) {
                HexieTrain.LOGGER.warn("[presence] 物理结构不在轨道上（连续 {} 次）⇒ 注销虚拟列车 {}", this.offTrackTicks, this.boundTrain);
                this.offTrackTicks = 0;
