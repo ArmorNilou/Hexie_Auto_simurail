@@ -3,6 +3,7 @@ package willow.train.hexietrain;
 import com.crystaelix.simurail.api.math.SimurailMath;
 import com.crystaelix.simurail.content.bogey.PhysicsBogeyAxle;
 import com.crystaelix.simurail.content.bogey.PhysicsBogeyBlockEntity;
+import com.crystaelix.simurail.content.bogey.PhysicsBogeyGroup;
 import com.crystaelix.simurail.content.track_switch.TrackSwitch;
 import com.crystaelix.simurail.content.track_switch.TrackSwitchBlockEntity;
 import com.crystaelix.simurail.content.track_switch.TrackSwitchState;
@@ -14,8 +15,12 @@ import com.simibubi.create.content.trains.graph.TrackNodeLocation;
 import com.simibubi.create.content.trains.signal.TrackEdgePoint;
 
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import net.minecraft.core.BlockPos;
@@ -83,6 +88,12 @@ public final class BogeySteering {
 
    private final Map<BlockPos, State> states = new HashMap<>();
 
+   /** 每个转向架位置只打一次岔道点普查 */
+   private final Set<BlockPos> switchDumped = new HashSet<>();
+
+   /** 让权日志：每个位置只打一次 */
+   private final Set<BlockPos> yieldLogged = new HashSet<>();
+
    /** TrackSwitch 的三个出口字段（protected）只反射一次 */
    private static final Map<String, Field> SWITCH_FIELDS = new ConcurrentHashMap<>();
 
@@ -118,6 +129,87 @@ public final class BogeySteering {
             tickOne(level, anchor, pos, route);
          } catch (Throwable t) {
             HexieTrain.LOGGER.warn("[steer] {} 判定异常 {}", pos.toShortString(), t.toString());
+         }
+      }
+      try {
+         oneWriterPerGroup(level, anchor, roster, route);
+      } catch (Throwable t) {
+         HexieTrain.LOGGER.warn("[steer] 组内让权异常 {}", t.toString());
+      }
+   }
+
+   /**
+    * <b>一车一组，只留一个"写值者"。</b>
+    *
+    * <p>{@code PhysicsBogeyGroup}（0.1.4 源码 55 行起）本来就是干这个的：
+    * <pre>
+    *   float steer = target.getSteerValue();
+    *   if(steer != 0) return steer;                    // 自己有位值就直接用
+    *   ... 找前后邻居，按 reverseStates 把邻居的值<b>翻正</b>后抄过来 ...
+    * </pre>
+    * 也就是说：<b>只要组里只有一个转向架带非 0 值，其余全部由它按各自的物理朝向翻正后继承</b>。
+    * 反过来，如果我们给组里每个转向架各写一个"自己算出来的"值，就等于绕开了它那套
+    * reverseStates 校正 —— 组内部一旦两个值语义相反，选股道时就是各走各的，车当场撕裂
+    * （2026-11-22 21:10 日志：20481031 打 +1 上了弯、20481034 打 -1 上了直，同一节车）。
+    *
+    * <p>所以这里把"写值权"收给组内**沿路线最靠前**（{@link RailCache.Route#sOf} 最大）的那一个转向架，
+    * 同组其他转向架一律清零，让它去继承。
+    */
+   private void oneWriterPerGroup(ServerLevel level, BlockPos anchor, BogeyRoster roster, RailCache.Route route) {
+      Map<PhysicsBogeyGroup, List<BlockPos>> byGroup = new HashMap<>();
+      Map<BlockPos, Double> sOf = new HashMap<>();
+      for (BlockPos pos : roster.positions()) {
+         if (!level.hasChunkAt(pos)) {
+            continue;
+         }
+         if (!(level.getBlockEntity(pos) instanceof PhysicsBogeyBlockEntity b)) {
+            continue;
+         }
+         PhysicsBogeyGroup g;
+         try {
+            g = b.getGroup();
+         } catch (Throwable t) {
+            continue;
+         }
+         if (g == null) {
+            continue;
+         }
+         byGroup.computeIfAbsent(g, k -> new ArrayList<>()).add(pos);
+         double s = -1.0;
+         try {
+            TravellingPoint tp = b.getAxle(true).getTrackPoint();
+            if (tp != null && tp.edge != null) {
+               s = route.sOf(tp.edge, tp.position);
+            }
+         } catch (Throwable ignored) {
+         }
+         sOf.put(pos, s);
+      }
+      for (List<BlockPos> list : byGroup.values()) {
+         if (list.size() <= 1) {
+            continue;
+         }
+         BlockPos lead = list.get(0);
+         for (BlockPos p : list) {
+            if (sOf.getOrDefault(p, -1.0) > sOf.getOrDefault(lead, -1.0)) {
+               lead = p;
+            }
+         }
+         for (BlockPos p : list) {
+            if (p.equals(lead)) {
+               continue;
+            }
+            State st = this.states.get(p);
+            if (st == null || st.side == 0) {
+               continue;
+            }
+            st.side = 0;
+            st.hold = 0;
+            write(level, anchor, p, st);
+            if (this.yieldLogged.add(p)) {
+               HexieTrain.LOGGER.info("[steer] {} 让权给组内领先轴 {}（自己清零，靠组继承）",
+                  p.toShortString(), lead.toShortString());
+            }
          }
       }
    }
@@ -166,6 +258,7 @@ public final class BogeySteering {
                st.wanted.isTurn() ? "弯" : "直", String.format("%.2fm", st.wanted.getLength()),
                hit ? "命中" : "❌ 走错股道"
             );
+            dumpCandidates(axle, st.lastEdge, tp.edge, pos);
             st.wanted = null;
          }
          st.hold = st.side == 0 ? 0 : HOLD_TICKS;
@@ -221,7 +314,7 @@ public final class BogeySteering {
       //   if(sw != null) { target = sw.selectTarget(pair.getSecond()); if(target != null) return target; }
       // 也就是说：有岔道方块时，写多少 steer 都没用，走哪股由那个方块的 state 决定。
       // 所以必须在过岔之前把方块扳到我们要的那一侧。
-      throwSwitch(level, tp, next, pos);
+      throwSwitch(level, axle.getTrackGraph(), tp, next, pos);
 
       st.kept = false;
       write(level, anchor, pos, st);
@@ -234,21 +327,44 @@ public final class BogeySteering {
     * 我们要走的目标边在岔口那一端的"下游节点"就是出口节点，拿它跟三个出口比一下就知道了。
     * 出口位置是 {@code TrackSwitch} 的 protected 字段，只能反射读（同 {@code SignalEdgeGroup.bogeys} 的做法）。
     */
-   private void throwSwitch(ServerLevel level, TravellingPoint tp, TrackEdge want, BlockPos pos) {
+   private void throwSwitch(ServerLevel level, TrackGraph graph, TravellingPoint tp, TrackEdge want, BlockPos pos) {
       try {
          TrackNode exitNode = (tp.node1 == tp.edge.node1) ? tp.edge.node2 : tp.edge.node1;
-         if (exitNode == null || want == null) {
+         if (want == null) {
+            return;
+         }
+         if (exitNode == null) {
             return;
          }
          TrackSwitch sw = null;
-         for (TrackEdgePoint p : tp.edge.getEdgeData().getPoints()) {
-            if (p instanceof TrackSwitch s && s.isActive() && s.isPrimary(exitNode)) {
-               sw = s;
+         // 岔道点可能注册在本边，也可能注册在反相的那个边对象上，两边都扫
+         for (TrackEdge e : new TrackEdge[]{tp.edge, reverseOf(graph, tp.edge)}) {
+            if (e == null) {
+               continue;
+            }
+            for (TrackEdgePoint p : e.getEdgeData().getPoints()) {
+               if (p instanceof TrackSwitch s) {
+                  if (this.switchDumped.add(pos)) {
+                     HexieTrain.LOGGER.info("[switch] {} 边上有岔道点 {} 主侧={} 激活={}",
+                        pos.toShortString(), s.getBlockEntityPos() == null ? "?" : s.getBlockEntityPos().toShortString(),
+                        s.isPrimary(exitNode), s.isActive());
+                  }
+                  if (s.isActive() && s.isPrimary(exitNode)) {
+                     sw = s;
+                     break;
+                  }
+               }
+            }
+            if (sw != null) {
                break;
             }
          }
          if (sw == null) {
-            return;   // 这个节点上没有岔道方块：照旧走 steer
+            if (this.switchDumped.add(pos)) {
+               HexieTrain.LOGGER.info("[switch] {} 出口节点 {} 上没有激活的岔道方块 ⇒ 这条岔口只能靠 steer 值",
+                  pos.toShortString(), exitNode.getLocation().getLocation());
+            }
+            return;
          }
          TrackNode wantFar = (want.node1 != exitNode) ? want.node1 : want.node2;
          if (wantFar == null) {
@@ -286,6 +402,18 @@ public final class BogeySteering {
       }
    }
 
+   /** 同一个图上反相的那个边对象（Create 里正反是两条不同的边对象）。 */
+   private static TrackEdge reverseOf(TrackGraph g, TrackEdge e) {
+      if (g == null || e == null || e.node1 == null || e.node2 == null) {
+         return null;
+      }
+      try {
+         Map<TrackNode, TrackEdge> back = g.getConnectionsFrom(e.node2);
+         return back == null ? null : back.get(e.node1);
+      } catch (Throwable t) {
+         return null;
+      }
+   }
    /** 目标出口节点对应哪个 state。读不到就返回 null（不猜）。 */
    private static TrackSwitchState stateFor(TrackSwitch sw, TrackNodeLocation wantLoc) {
       if (matchExit(sw, "straightExit", wantLoc)) return TrackSwitchState.STRAIGHT;
@@ -408,6 +536,53 @@ public final class BogeySteering {
    }
 
    // ================================================================ 判据
+
+   /**
+    * 过节点那一刻，把**岔口上所有候选边**按 Simurail 的分类方式打出来。
+    *
+    * <p>这一步是为了分清两种完全不同的失败：
+    * <ol>
+    *   <li>那条弯在候选里、但被归进了另一组 ⇒ 是左右/取端的问题；</li>
+    *   <li>那条弯**根本不在候选里**（或者两条都是"直"，straightTarget 只能装一条）⇒
+    *       写什么 steer 都没用，得改用别的机制（例如 TrackSwitch 或 axle.setCurrentPath）。</li>
+    * </ol>
+    * turn 用的是**本轴自己的** {@code getTrackFrame().lateral()}，也就是 Simurail 在 steer() 里
+    * 用的那一条，所以这一行就是它眼里的世界。
+    */
+   private void dumpCandidates(PhysicsBogeyAxle axle, TrackEdge prev, TrackEdge taken, BlockPos pos) {
+      try {
+         TrackGraph g = axle == null ? null : axle.getTrackGraph();
+         if (g == null || prev == null || taken == null) {
+            return;
+         }
+         TrackNode j = (prev.node1 == taken.node1 || prev.node1 == taken.node2) ? prev.node1 : prev.node2;
+         Map<TrackNode, TrackEdge> conns = CreateApi.connections(g, j);
+         if (conns == null || conns.isEmpty()) {
+            return;
+         }
+         Vector3dc lat = lateralOf(axle, pos);
+         StringBuilder sb = new StringBuilder();
+         for (Map.Entry<TrackNode, TrackEdge> en : conns.entrySet()) {
+            TrackEdge e = en.getValue();
+            if (e == null) {
+               continue;
+            }
+            double t = 0.0;
+            if (e.isTurn() && lat != null) {
+               Vector3d c = new Vector3d();
+               SimurailMath.cachedControlPoints(e.getTurn()).curvature(0.0, c);
+               t = c.dot(lat);
+            }
+            if (sb.length() > 0) {
+               sb.append(" ｜ ");
+            }
+            sb.append(String.format("%s%.2fm turn%+.5f", e.isTurn() ? "弯" : "直", e.getLength(), t));
+         }
+         HexieTrain.LOGGER.info("[steer] {} 岔口候选（本轴 trackFrame 算 turn）：{}", pos.toShortString(), sb);
+      } catch (Throwable t) {
+         HexieTrain.LOGGER.warn("[steer] {} 候选边诊断异常 {}", pos.toShortString(), t.toString());
+      }
+   }
 
    /**
     * 行进右 = 归一化(岔口节点位置 − 轴当前位置) × 上。
