@@ -289,18 +289,9 @@ public final class BogeySteering {
       TrackNode junction = (next.node1 == tp.edge.node1 || next.node1 == tp.edge.node2)
          ? next.node1 : next.node2;
 
-      // ===== 判据用的"行进右"必须**全车一致**，不能取每根转向架自己的 trackFrame.lateral =====
-      // 2026-11-22 21:10/21:19 两次实机日志钉死了这件事：
-      //   20481031 打(+1) → 过节点 实际上了=弯 38.56m ⇒ 命中
-      //   20481034 打(−1) → 过节点 实际上了=直 14.00m ⇒ ❌
-      // 同一条目标边、同一个岔口，两根轴要的却是同一个符号 ⇒ 它们算出相反符号是错的。
-      // 根因：`trackFrame.lateral` 会被 trackAxleFrame.direction 翻正，那是**每根转向架自己的朝向**；
-      // 而 1.2.6 试过的 `edge.getDirection(0/1)` 也不行 —— 同一条轨在 Create 里正反是两个边对象，
-      // node1/node2 编号可以互相颠倒，`alongEdge` 判断一样会反。
-      // 唯一没有歧义的写法：**从轴当前世界位置指向岔口节点**，那就是行进方向。
-      Vector3dc lateral = travelRightOf(axle, tp, junction);
+      Vector3dc lateral = lateralOf(axle, pos);
       if (lateral == null) {
-         keepOrRelease(st, level, anchor, pos, "算不出行进方向");
+         keepOrRelease(st, level, anchor, pos, "读不到 trackFrame.lateral");
          return;
       }
 
