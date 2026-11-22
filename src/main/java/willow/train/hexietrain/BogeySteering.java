@@ -3,11 +3,19 @@ package willow.train.hexietrain;
 import com.crystaelix.simurail.api.math.SimurailMath;
 import com.crystaelix.simurail.content.bogey.PhysicsBogeyAxle;
 import com.crystaelix.simurail.content.bogey.PhysicsBogeyBlockEntity;
+import com.crystaelix.simurail.content.track_switch.TrackSwitch;
+import com.crystaelix.simurail.content.track_switch.TrackSwitchBlockEntity;
+import com.crystaelix.simurail.content.track_switch.TrackSwitchState;
 import com.simibubi.create.content.trains.entity.TravellingPoint;
 import com.simibubi.create.content.trains.graph.TrackEdge;
+import com.simibubi.create.content.trains.graph.TrackNode;
+import com.simibubi.create.content.trains.graph.TrackNodeLocation;
+import com.simibubi.create.content.trains.signal.TrackEdgePoint;
 
+import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -73,8 +81,14 @@ public final class BogeySteering {
 
    private final Map<BlockPos, State> states = new HashMap<>();
 
+   /** TrackSwitch 的三个出口字段（protected）只反射一次 */
+   private static final Map<String, Field> SWITCH_FIELDS = new ConcurrentHashMap<>();
+
    /** 曲线判据读不到 lateral 时只警告一次，别刷屏。 */
    private boolean warnedNoFrame = false;
+   /** 岔口三个出口对不上 / 反射失败，各只警告一次 */
+   private boolean warnedSwitchNoExit = false;
+   private boolean warnedSwitchError = false;
 
    private static final class State {
       /** −1 左 / +1 右 / 0 不给 */
@@ -83,6 +97,10 @@ public final class BogeySteering {
       int written = 0;
       int hold = 0;
       TrackEdge lastEdge = null;
+      /** 上一次判定想要的下一段边（跨节点时用来核对到底走了哪股道） */
+      TrackEdge wanted = null;
+      /** 已经因为"判定不出来"续过一次值，只留一条日志 */
+      boolean kept = false;
       /** 上一次判定的目标边摘要，只给日志用 */
       String note = "-";
       /** "写了却没生效"只警告一次（下一次生效时复位） */
@@ -137,6 +155,17 @@ public final class BogeySteering {
 
       // 跨过节点 = 这个轴的 edge 变了。变了就进入"保持"窗口
       if (st.lastEdge != null && !RailCache.sameLink(st.lastEdge, tp.edge)) {
+         if (st.wanted != null) {
+            boolean hit = RailCache.sameLink(st.wanted, tp.edge);
+            HexieTrain.LOGGER.info(
+               "[steer] {} 过节点 实际上了={} {} ｜ 想要={} {} ⇒ {}",
+               pos.toShortString(),
+               tp.edge.isTurn() ? "弯" : "直", String.format("%.2fm", tp.edge.getLength()),
+               st.wanted.isTurn() ? "弯" : "直", String.format("%.2fm", st.wanted.getLength()),
+               hit ? "命中" : "❌ 走错股道"
+            );
+            st.wanted = null;
+         }
          st.hold = st.side == 0 ? 0 : HOLD_TICKS;
       }
       st.lastEdge = tp.edge;
@@ -149,20 +178,151 @@ public final class BogeySteering {
 
       TrackEdge next = route.nextEdgeAfter(tp.edge);
       if (next == null) {
-         release(st, level, anchor, pos);
+         // 这根轴已经不在路线上了 —— 但**不许单方面放直行**。
+         // Simurail 的 PhysicsBogeyGroup.getSteerValue(target) 在自己为 0 时会去
+         // 拿邻居的值来凑（front/back 单取一个，或者 (front+back)/2）。
+         // 同一组里"一个 ±1、一个 0"正好会踩进那条路，而那条路里
+         // `backReversed` 用的是 frontIndex（0.1.3/0.1.4 的复制粘贴笔误），
+         // 结果可能被翻成反号，甚至 (1 + -1)/2 = 0 ⇒ 该进岔的时候进直行。
+         // 所以：只要本车别的转向架还在给值，这里就把上一次的值续着，
+         // 真正的清零交给 releaseAll（路线没了 / 手操 / 不在导航）。
+         keepOrRelease(st, level, anchor, pos, "不在路线上");
          return;
       }
 
-      // 曲线判据要的是转向架自己的 lateral；拿不到就放直行（不猜），并把原因打出来
+      // 曲线判据要的是转向架自己的 lateral；拿不到就保持上次，不清零
       Vector3dc lateral = lateralOf(axle, pos);
       if (lateral == null) {
-         release(st, level, anchor, pos);
+         keepOrRelease(st, level, anchor, pos, "读不到 trackFrame.lateral");
          return;
       }
 
       st.side = sideOf(next, lateral, pos);
+      st.wanted = next;
       st.note = (next.isTurn() ? "弯" : "直") + String.format(" %.2fm", next.getLength());
+
+      // ===== 真正的道岔：simurail:track_switch =====
+      // steer 值只是"没有岔道方块时的默认选择器"。只要岔口上装了 TrackSwitch 且它 isActive()，
+      // Simurail 的 TravellingPointMixin 会在 TravellingPoint.travel 里**直接把我们的选择器顶掉**：
+      //   if(sw != null) { target = sw.selectTarget(pair.getSecond()); if(target != null) return target; }
+      // 也就是说：有岔道方块时，写多少 steer 都没用，走哪股由那个方块的 state 决定。
+      // 所以必须在过岔之前把方块扳到我们要的那一侧。
+      throwSwitch(level, tp, next, pos);
+
+      st.kept = false;
       write(level, anchor, pos, st);
+   }
+
+   /**
+    * 把岔口的 {@code simurail:track_switch} 扳到我们要走的那一侧。
+    *
+    * <p>岔口三个出口各对应一个 state：{@code STRAIGHT / LEFT / RIGHT}；
+    * 我们要走的目标边在岔口那一端的"下游节点"就是出口节点，拿它跟三个出口比一下就知道了。
+    * 出口位置是 {@code TrackSwitch} 的 protected 字段，只能反射读（同 {@code SignalEdgeGroup.bogeys} 的做法）。
+    */
+   private void throwSwitch(ServerLevel level, TravellingPoint tp, TrackEdge want, BlockPos pos) {
+      try {
+         TrackNode exitNode = (tp.node1 == tp.edge.node1) ? tp.edge.node2 : tp.edge.node1;
+         if (exitNode == null || want == null) {
+            return;
+         }
+         TrackSwitch sw = null;
+         for (TrackEdgePoint p : tp.edge.getEdgeData().getPoints()) {
+            if (p instanceof TrackSwitch s && s.isActive() && s.isPrimary(exitNode)) {
+               sw = s;
+               break;
+            }
+         }
+         if (sw == null) {
+            return;   // 这个节点上没有岔道方块：照旧走 steer
+         }
+         TrackNode wantFar = (want.node1 != exitNode) ? want.node1 : want.node2;
+         if (wantFar == null) {
+            return;
+         }
+         TrackNodeLocation wantLoc = wantFar.getLocation();
+         TrackSwitchState need = stateFor(sw, wantLoc);
+         if (need == null) {
+            if (!this.warnedSwitchNoExit) {
+               this.warnedSwitchNoExit = true;
+               HexieTrain.LOGGER.warn("[switch] {} 岔道三个出口都对不上要走的边（{}），这条岔口扳不了", pos.toShortString(), wantLoc.getLocation());
+            }
+            return;
+         }
+         BlockPos sp = sw.getBlockEntityPos();
+         if (sp == null) {
+            return;
+         }
+         if (!level.hasChunkAt(sp)) {
+            return;   // 区块没加载：不猜（同 BogeyBinding 的死锁教训）
+         }
+         if (!(level.getBlockEntity(sp) instanceof TrackSwitchBlockEntity be)) {
+            return;
+         }
+         if (be.getState() != need) {
+            be.trySetState(need);
+            HexieTrain.LOGGER.info("[switch] {} 扳道岔 {} {} → {}", pos.toShortString(),
+               sp.toShortString(), describe(be.getState()), describe(need));
+         }
+      } catch (Throwable t) {
+         if (!this.warnedSwitchError) {
+            this.warnedSwitchError = true;
+            HexieTrain.LOGGER.warn("[switch] {} 扳岔异常 {}", pos.toShortString(), t.toString());
+         }
+      }
+   }
+
+   /** 目标出口节点对应哪个 state。读不到就返回 null（不猜）。 */
+   private static TrackSwitchState stateFor(TrackSwitch sw, TrackNodeLocation wantLoc) {
+      if (matchExit(sw, "straightExit", wantLoc)) return TrackSwitchState.STRAIGHT;
+      if (matchExit(sw, "leftExit", wantLoc)) return TrackSwitchState.LEFT;
+      if (matchExit(sw, "rightExit", wantLoc)) return TrackSwitchState.RIGHT;
+      return null;
+   }
+
+   private static boolean matchExit(TrackSwitch sw, String field, TrackNodeLocation wantLoc) {
+      try {
+         Field f = switchField(field);
+         Object v = f.get(sw);
+         if (!(v instanceof TrackNodeLocation loc) || loc == null) {
+            return false;
+         }
+         return loc.getLocation().equals(wantLoc.getLocation());
+      } catch (Throwable t) {
+         return false;
+      }
+   }
+
+   private static Field switchField(String name) throws NoSuchFieldException {
+      Field f = SWITCH_FIELDS.get(name);
+      if (f == null) {
+         f = TrackSwitch.class.getDeclaredField(name);
+         f.setAccessible(true);
+         SWITCH_FIELDS.put(name, f);
+      }
+      return f;
+   }
+
+   private static String describe(TrackSwitchState s) {
+      return s == null ? "null" : s.name();
+   }
+
+   /**
+    * 判定不出来时：已经给着非 0 值就**续着**（绝不单方面写 0，理由见调用处），
+    * 本来就没给过值才真的清零。
+    */
+   private void keepOrRelease(State st, ServerLevel level, BlockPos anchor, BlockPos pos, String why) {
+      if (st.side != 0) {
+         st.hold = 0;
+         if (!st.kept) {
+            st.kept = true;
+            HexieTrain.LOGGER.info("[steer] {} {} ⇒ 保住上次的 {}（不单方面放直行）",
+               pos.toShortString(), why, st.side);
+         }
+         write(level, anchor, pos, st);
+         return;
+      }
+      release(st, level, anchor, pos);
    }
 
    private void release(State st, ServerLevel level, BlockPos anchor, BlockPos pos) {
@@ -278,6 +438,13 @@ public final class BogeySteering {
       if (Math.abs(turn) < SimurailMath.EPSILON) {
          return 0;   // 他们同样把"几乎不弯的弯"当直行
       }
+      // ===== 符号翻过来（2026-11-22 20:44 实机日志证明的，不是猜）=====
+      // 证据：20481034 对「弯 38.56m」打了 −1（== 行进左），结果过节点时上了「直 14.00m」。
+      // 按 Simurail 的 steer()，steerValue != 0 时只有在候选里**那条弯不在对应组**才会退回
+      // straightTarget —— 也就是那条弯在节点上被归进了 rightTargets，leftTargets 是空的。
+      // ⇒ 想让这根轴走那条弯，该给的是 +1。同一节车厢的另一根轴算出 +1，两根轴最后都走了直股，
+      // 说明**两根轴的符号都是反的**，所以这里整体取反。
+      // 取反后与 Simurail 的 `curvature(0)·lateral` 严格反号：他们要正我们给负。
       return turn > 0.0 ? 1 : -1;
    }
 }
