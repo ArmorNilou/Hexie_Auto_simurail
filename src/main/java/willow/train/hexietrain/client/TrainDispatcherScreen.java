@@ -6,7 +6,7 @@ import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Inventory;
 import willow.train.hexietrain.TrainDispatcherBlockEntity;
-import willow.train.hexietrain.TrainDispatcherMenuGhost;
+import willow.train.hexietrain.TrainDispatcherMenu;
 
 /**
  * 调度器界面。
@@ -28,7 +28,7 @@ import willow.train.hexietrain.TrainDispatcherMenuGhost;
  * <p>原来的"左道岔 / 右道岔"一行（4 个无线频率槽）已经整行删除：道岔转向不再走红石，
  * 由 {@link willow.train.hexietrain.BogeySteering} 逐转向架直接写 Simurail 的遥控值。
  */
-public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatcherMenuGhost> {
+public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatcherMenu> {
    private static final int PANEL_W = 176;
    private static final int PANEL_H = 230;
    private static final int C_BORDER = -12763843;
@@ -48,13 +48,18 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
    /** 转向架绑定信息占的两行 y。 */
    private static final int INFO_Y1 = 52;
    private static final int INFO_Y2 = 62;
+   /** "清除绑定"按钮：放在"绑定了 N 个转向架"右边。 */
+   private static final int CLEAR_X = 120;
+   private static final int CLEAR_Y = 50;
+   private static final int CLEAR_W = 48;
+   private static final int CLEAR_H = 12;
    private static final int CELLS_X = 86;
    private static final int CELL_W = 4;
    private static final int CELL_GAP = 1;
    private static final int CELL_COUNT = 15;
    private int browseIndex = -1;
 
-   public TrainDispatcherScreen(TrainDispatcherMenuGhost menu, Inventory playerInventory, Component title) {
+   public TrainDispatcherScreen(TrainDispatcherMenu menu, Inventory playerInventory, Component title) {
       super(menu, playerInventory, title);
       this.imageWidth = 176;
       this.imageHeight = 230;
@@ -116,7 +121,7 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
    }
 
    protected void renderLabels(GuiGraphics g, int mouseX, int mouseY) {
-      TrainDispatcherMenuGhost menu = this.menu;
+      TrainDispatcherMenu menu = this.menu;
       g.drawString(this.font, this.title, 8, 4, C_TEXT, false);
 
       String badge;
@@ -144,6 +149,7 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
       if (bogeys <= 0) {
          g.drawString(this.font, "潜行右键调度器选中，再右键转向架绑定", 8, INFO_Y2, C_TEXT_DIM, false);
       }
+      this.drawClearButton(g, bogeys, mouseX, mouseY);
 
       // ---- 制动 / 节流阀 ----
       for (int row = 0; row < ROW_Y.length; row++) {
@@ -172,9 +178,27 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
          if (menu.arrived()) {
             g.drawString(this.font, "距站：到站", 8, 124, -12599489, false);
          } else {
+            // 1.2.0：距站三态。以前"寻路失败"和"等待信号开放"都显示成 `--`，
+            // 看不出是"还没规划出来"还是"规划好了在等灯"，得去翻日志。
+            // 状态由 BE.uiDistanceState() 给（0=正常 / 1=寻路失败 / 2=等待信号开放）。
+            int distState = menu.distanceState();
             int mil = menu.mileage();
-            String txt = (!menu.probeOk() || mil < 0) ? "距站：--" : String.format("距站：%.1f m", (double)mil / 10.0);
-            g.drawString(this.font, txt, 8, 124, -10496, false);
+            String txt;
+            int color;
+            if (distState == TrainDispatcherMenu.DIST_STATE_PLAN_FAILED) {
+               txt = "距站：寻路失败";
+               color = -35072;
+            } else if (distState == TrainDispatcherMenu.DIST_STATE_WAIT_SIGNAL) {
+               txt = "距站：等待信号";
+               color = -171;
+            } else if (!menu.probeOk() || mil < 0) {
+               txt = "距站：--";
+               color = -10496;
+            } else {
+               txt = String.format("距站：%.1f m", (double)mil / 10.0);
+               color = -10496;
+            }
+            g.drawString(this.font, txt, 8, 124, color, false);
          }
       }
 
@@ -223,6 +247,23 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
       }
    }
 
+   /**
+    * "清除绑定"按钮：画在"绑定了 N 个转向架"右边。
+    * <p>只有真的绑了东西才点亮；没绑时是个死按钮，点了不发包。
+    */
+   private void drawClearButton(GuiGraphics g, int bogeys, int mouseX, int mouseY) {
+      boolean enabled = bogeys > 0;
+      boolean hover = enabled && isIn(mouseX, mouseY, CLEAR_X, CLEAR_Y, CLEAR_W, CLEAR_H);
+      int frame = enabled ? (hover ? -14721089 : C_CELL_FRAME) : C_PANEL_DARK;
+      int fill = hover ? C_SLOT_INNER : C_HEADER;
+      g.fill(CLEAR_X, CLEAR_Y, CLEAR_X + CLEAR_W, CLEAR_Y + CLEAR_H, frame);
+      g.fill(CLEAR_X + 1, CLEAR_Y + 1, CLEAR_X + CLEAR_W - 1, CLEAR_Y + CLEAR_H - 1, fill);
+      String label = "清除绑定";
+      int color = enabled ? (hover ? -8739 : C_TEXT) : C_TEXT_DIM;
+      g.drawString(this.font, label, CLEAR_X + (CLEAR_W - this.font.width(label)) / 2,
+         CLEAR_Y + 2, color, false);
+   }
+
    private static int litColor(int index) {
       int gray = 90 * (14 - index) / 14;
       return -65536 | gray << 8 | gray;
@@ -256,11 +297,18 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
    public boolean mouseClicked(double mouseX, double mouseY, int button) {
       int x = (int)(mouseX - (double)this.leftPos);
       int y = (int)(mouseY - (double)this.topPos);
-      if (button == 0 && this.minecraft != null && this.minecraft.gameMode != null && isIn(x, y, 102, 1, 70, 15)) {
-         this.minecraft.gameMode.handleInventoryButtonClick(this.menu.containerId, 3);
-         return true;
-      } else {
-         return super.mouseClicked(mouseX, mouseY, button);
+      if (button == 0 && this.minecraft != null && this.minecraft.gameMode != null) {
+         // 清除绑定（按钮 id 4）：没绑东西时是死按钮，连包都不发
+         if (this.menu.bogeyCount() > 0 && isIn(x, y, CLEAR_X, CLEAR_Y, CLEAR_W, CLEAR_H)) {
+            this.minecraft.gameMode.handleInventoryButtonClick(this.menu.containerId, 4);
+            return true;
+         }
+         // 手动 / 自动 切换（按钮 id 3）
+         if (isIn(x, y, 102, 1, 70, 15)) {
+            this.minecraft.gameMode.handleInventoryButtonClick(this.menu.containerId, 3);
+            return true;
+         }
       }
+      return super.mouseClicked(mouseX, mouseY, button);
    }
 }

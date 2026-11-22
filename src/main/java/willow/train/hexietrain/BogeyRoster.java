@@ -68,20 +68,31 @@ public final class BogeyRoster {
       this.bogeys.clear();
    }
 
+   /**
+    * 一键清除绑定：表归零，车辆ID 也一起作废 —— 清空之后就是一个还没分配身份的新车，
+    * 重新绑定时会拿一个新的 ID，避免两个不同编组共用一个车辆ID。
+    */
+   /**
+    * 由一个<b>落盘的全局计数器</b>分配好的 ID 写进来（见 TrainBindingData.allocateVehicleId）。
+    * 以前这里是进程内静态计数器，重启就从 0 重来，两个调度器会拿到同一个 ID。
+    */
+   public void assignVehicleId(long id) {
+      if (id < 0L || id >= 1_000_000_000_000_000L) {
+         throw new IllegalStateException("[HexieTrain] 车辆ID 非法: " + id);
+      }
+      this.vehicleId = id;
+      HexieTrain.LOGGER.info("[roster] 写入车辆ID {}", id);
+   }
+
+   public void clearBindings() {
+      this.bogeys.clear();
+      this.vehicleId = -1L;
+   }
+
    public long vehicleId() {
       return this.vehicleId;
    }
 
-   /** 第一次绑定时分配。溢出（超过 15 位十进制）按约定直接崩，不兜底。 */
-   public void assignVehicleIdIfNeeded() {
-      if (this.vehicleId < 0L) {
-         this.vehicleId = VehicleIds.next();
-         if (this.vehicleId >= 1_000_000_000_000_000L) {
-            throw new IllegalStateException("[HexieTrain] 车辆ID 超出 15 位十进制上限: " + this.vehicleId);
-         }
-         HexieTrain.LOGGER.info("[roster] 分配车辆ID {}", this.vehicleId);
-      }
-   }
 
    // ================================================================ 排序与命名
 
@@ -161,12 +172,4 @@ public final class BogeyRoster {
       }
    }
 
-   /** 车辆ID 分配器。目前是进程内计数；要做成跨存档唯一得另找地方落盘。 */
-   private static final class VehicleIds {
-      private static long next = 0L;
-
-      static long next() {
-         return next++;
-      }
-   }
 }

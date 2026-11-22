@@ -12,7 +12,7 @@ import net.neoforged.fml.common.EventBusSubscriber.Bus;
 import net.neoforged.neoforge.client.event.RegisterMenuScreensEvent;
 import willow.train.hexietrain.HexieRegistries;
 import willow.train.hexietrain.HexieTrain;
-import willow.train.hexietrain.TrainDispatcherMenuGhost;
+import willow.train.hexietrain.TrainDispatcherMenu;
 
 @EventBusSubscriber(
    modid = "hexie_auto_simuroute",
@@ -31,7 +31,7 @@ public final class HexieClientSetup {
             constructorType.getClassLoader(),
             new Class[]{constructorType},
             (proxy, method, args) -> args != null && args.length >= 3
-                  ? new TrainDispatcherScreen((TrainDispatcherMenuGhost)args[0], (Inventory)args[1], (Component)args[2])
+                  ? new TrainDispatcherScreen((TrainDispatcherMenu)args[0], (Inventory)args[1], (Component)args[2])
                   : null
          );
          Method register = RegisterMenuScreensEvent.class.getMethod("register", MenuType.class, constructorType);

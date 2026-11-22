@@ -53,7 +53,9 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
    }
 
    private static TrainDispatcherBlockEntity clientEntity(Inventory inv, BlockPos pos) {
-      return inv.player.level().getBlockEntity(pos) instanceof TrainDispatcherBlockEntity be ? be : null;
+      TrainDispatcherBlockEntity found = inv.player.level().getBlockEntity(pos) instanceof TrainDispatcherBlockEntity be ? be : null;
+      HexieTrain.LOGGER.info("[ui] 客户端建菜单 pos={} be={}", pos.toShortString(), found == null ? "null" : "ok");
+      return found;
    }
 
    public TrainDispatcherMenu(int containerId, Inventory playerInventory, TrainDispatcherBlockEntity be) {
@@ -93,6 +95,9 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
       }
 
       this.refresh();
+      HexieTrain.LOGGER.info("[ui] addSlots 完成 container={} slots={} freq={}",
+         this.container == null ? "null" : this.container.getContainerSize(), this.slots.size(),
+         TrainDispatcherBlockEntity.FREQ_SLOTS);
    }
 
    public void refresh() {
@@ -115,6 +120,8 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
       this.cached[17] = this.blockEntity.probeBackwards() ? 1 : 0;
       this.cached[18] = this.blockEntity.bogeyCount();
       this.cached[19] = this.blockEntity.rosterCars();
+      // 距站三态（1.2.0）：0=正常 / 1=寻路失败 / 2=等待信号开放
+      this.cached[DATA_DISTANCE_STATE] = this.blockEntity.uiDistanceState();
       }
    }
 
@@ -135,6 +142,17 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
                   this.blockEntity.setManualMode(true);
                }
 
+               this.refresh();
+               return true;
+            case 4:
+               // 一键清除绑定（界面按钮 / 调度器被破坏时共用同一个入口）
+               if (this.blockEntity.hasOwner() && !this.blockEntity.isOwner(player)) {
+                  if (player instanceof net.minecraft.server.level.ServerPlayer sp) sp.closeContainer();
+                  player.displayClientMessage(net.minecraft.network.chat.Component
+                     .literal(this.blockEntity.denyText("清除绑定")).withStyle(net.minecraft.ChatFormatting.RED), false);
+                  return true;
+               }
+               this.blockEntity.clearBindings("界面按钮");
                this.refresh();
                return true;
             default:
@@ -161,6 +179,17 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
 
    public int mileage() {
       return this.data.get(8);
+   }
+
+   // ===== 距站三态（1.2.0）=====
+   /** 数据槽 13：0=正常 / 1=寻路失败 / 2=等待信号开放。 */
+   public static final int DATA_DISTANCE_STATE = 13;
+   public static final int DIST_STATE_OK = 0;
+   public static final int DIST_STATE_PLAN_FAILED = 1;
+   public static final int DIST_STATE_WAIT_SIGNAL = 2;
+
+   public int distanceState() {
+      return this.data.get(DATA_DISTANCE_STATE);
    }
 
    public int throttleOutput() {
@@ -206,7 +235,10 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
    }
 
    public int stopCount() {
-      return this.data.get(9);
+      // 1.2.0 修：这里原来读 data.get(9)，那是 throttle。站数在 5
+      // （refresh() 里 c[5] = stopNames().size()）。这个 getter 当时只有
+      // TrainDispatcherMenuGhost 那份被屏幕调用，所以读错也没暴露出来。
+      return this.data.get(5);
    }
 
    public boolean manualMode() {
@@ -227,6 +259,23 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
 
    public int sensorSpeedCenti() {
       return this.data.get(15);
+   }
+
+   // ===== 下面三个 getter 原来只写在 TrainDispatcherMenuGhost 里，屏幕要用 =====
+   // 1.2.0 把两套菜单合并成一个类之后补过来。数据槽 16/17/18 一直有人在写
+   // （refresh() 里 c[16]/c[17]/c[18]），只是读它们的方法以前在另一个类里。
+
+   public boolean probeOk() {
+      return this.data.get(16) != 0;
+   }
+
+   public boolean probeBackwards() {
+      return this.data.get(17) != 0;
+   }
+
+   /** 已绑定的转向架数量（0 = 未连接）。 */
+   public int bogeyCount() {
+      return this.data.get(18);
    }
 
    public ItemStack quickMoveStack(Player player, int index) {

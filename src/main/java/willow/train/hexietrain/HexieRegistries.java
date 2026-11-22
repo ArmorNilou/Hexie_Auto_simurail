@@ -42,13 +42,15 @@ public final class HexieRegistries {
       "train_dispatcher", () -> buildBlockEntityType((Block)TRAIN_DISPATCHER.get())
    );
    public static final DeferredRegister<MenuType<?>> MENUS = DeferredRegister.create(Registries.MENU, "hexie_auto_simuroute");
-   public static final DeferredHolder<MenuType<?>, MenuType<TrainDispatcherMenuGhost>> TRAIN_DISPATCHER_MENU = MENUS.register(
+   public static final DeferredHolder<MenuType<?>, MenuType<TrainDispatcherMenu>> TRAIN_DISPATCHER_MENU = MENUS.register(
       "train_dispatcher",
-      () -> IMenuTypeExtension.create((id, inv, buf) -> new TrainDispatcherMenuGhost(HexieRegistries.menuType(), id, inv, buf))
+      // 1.2.0：两套菜单合并成一个类。以前这里造的是 TrainDispatcherMenuGhost（客户端专用），
+      // 而 createMenu() 返回的是 TrainDispatcherMenu（服务端），两边槽位/数据下标各写一遍。
+      () -> IMenuTypeExtension.create((id, inv, buf) -> new TrainDispatcherMenu(id, inv, buf))
    );
    public static final DeferredRegister<CreativeModeTab> TABS = DeferredRegister.create(Registries.CREATIVE_MODE_TAB, "hexie_auto_simuroute");
    /** 供菜单工厂在运行时取类型，避开初始化器自引用。 */
-   public static MenuType<TrainDispatcherMenuGhost> menuType() {
+   public static MenuType<TrainDispatcherMenu> menuType() {
       return TRAIN_DISPATCHER_MENU.get();
    }
 

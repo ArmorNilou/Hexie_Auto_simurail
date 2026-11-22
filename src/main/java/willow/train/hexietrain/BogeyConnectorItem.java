@@ -7,6 +7,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
@@ -58,15 +59,28 @@ public class BogeyConnectorItem extends Item {
       boolean sneak = player != null && player.isShiftKeyDown();
       BlockEntity be = level.getBlockEntity(clicked);
 
+      // ---------- 门槛：必须先物理化，才允许选中 / 绑定 / 解绑 ----------
+      // 裸 BlockPos 跨不过物理化这一跳：编组一进子层，方块位置全变成 plot 坐标，
+      // 表里那条旧世界坐标就指到虚空；而旧坐标上已经没有方块可点，连解绑都做不到。
+      // 所以未物理化的一律拒之门外，不许任何一条僵尸条目被写进表里。
+      if ((be instanceof TrainDispatcherBlockEntity || be instanceof PhysicsBogeyBlockEntity)
+            && !isPhysicalized(level, clicked)) {
+         msg(player, "请先物理化再进行绑定", ChatFormatting.RED);
+         return InteractionResult.SUCCESS;
+      }
+
       // ---------- 情况 1：点了调度器 → 记住它，切换目标 ----------
       if (be instanceof TrainDispatcherBlockEntity dispatcher) {
          CompoundTag data = customTag(stack);
          data.putLong(KEY_DISPATCHER, clicked.asLong());
-         dispatcher.roster().assignVehicleIdIfNeeded();
+         if (dispatcher.roster().vehicleId() < 0L && level instanceof ServerLevel slId) {
+            dispatcher.roster().assignVehicleId(TrainBindingData.get(slId).allocateVehicleId());
+         }
          data.putLong(KEY_VEHICLE_ID, dispatcher.roster().vehicleId());
          stack.set(DataComponents.CUSTOM_DATA, CustomData.of(data));
          dispatcher.setChanged();
          // 一句聊天都不发：选中信息由 client/ConnectorHudRenderer 画在快捷栏上方。
+         dispatcher.claimOwner(player);
          HexieTrain.LOGGER.info("[roster] 选中调度器 {} 车辆ID={} 已绑={}",
             clicked.toShortString(), dispatcher.roster().vehicleId(), dispatcher.roster().size());
          return InteractionResult.SUCCESS;
@@ -83,7 +97,15 @@ public class BogeyConnectorItem extends Item {
             msg(player, "之前选中的调度器不在了（" + dispPos.toShortString() + "），请重新选一个", ChatFormatting.RED);
             return InteractionResult.SUCCESS;
          }
-         dispatcher.roster().assignVehicleIdIfNeeded();
+         if (dispatcher.roster().vehicleId() < 0L && level instanceof ServerLevel slId) {
+            dispatcher.roster().assignVehicleId(TrainBindingData.get(slId).allocateVehicleId());
+         }
+
+         // 归属锁：有主且不是主 ⇒ 绑定/解绑一律拒绝（开 UI 不受限）
+         if (dispatcher.hasOwner() && !dispatcher.isOwner(player)) {
+            msg(player, dispatcher.denyText(sneak ? "解绑转向架" : "绑定转向架"), ChatFormatting.RED);
+            return InteractionResult.SUCCESS;
+         }
 
          if (sneak) {
             boolean removed = dispatcher.roster().remove(clicked);
@@ -121,6 +143,22 @@ public class BogeyConnectorItem extends Item {
    }
 
    /** 物品里那份车辆ID跟不上（换了调度器/刚刚才分配）时补一次。 */
+   /**
+    * 这个位置是不是已经在某个物理化子层里（= 已物理化）。
+    *
+    * <p>判据（javap 实证）：{@code Sable.HELPER.getContaining(level, chunkX, chunkZ)}
+    * → {@code SubLevelContainer.getPlot(chunkX, chunkZ)} → null 时返回 null；
+    * 只有那块地皮真被子层占着才拿得到 {@code LevelPlot}，再取 {@code LevelPlot.getSubLevel()}。
+    * 所以"拿得到子层"⟺"这个方块已经在物理化编组里"。
+    */
+   private static boolean isPhysicalized(Level level, BlockPos pos) {
+      try {
+         return level instanceof ServerLevel sl && SubLevelSuspend.containing(sl, pos) != null;
+      } catch (Throwable t) {
+         return false;
+      }
+   }
+
    private static void syncVehicleId(ItemStack stack, TrainDispatcherBlockEntity dispatcher) {
       long vid = dispatcher.roster().vehicleId();
       CompoundTag data = customTag(stack);

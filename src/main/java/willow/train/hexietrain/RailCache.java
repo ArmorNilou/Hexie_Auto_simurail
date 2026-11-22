@@ -32,30 +32,7 @@ public final class RailCache {
 
    // ================================================================ 数据结构
 
-   /** 站点边：由 Create 边点事件解析出来的权威身份。 */
-   public static final class StationEdge {
-      public final GlobalStation station;
-      public final TrackEdge edge;
-      public final TrackNode nodeA;
-      public final TrackNode nodeB;
-      /** 站点边点在 edge 上的位置（从 node1 量起），拿不到就是 NaN */
-      public final double positionOnEdge;
-
-      public StationEdge(GlobalStation station, TrackEdge edge, TrackNode nodeA, TrackNode nodeB, double positionOnEdge) {
-         this.station = station;
-         this.edge = edge;
-         this.nodeA = nodeA;
-         this.nodeB = nodeB;
-         this.positionOnEdge = positionOnEdge;
-      }
-
-      public String describe() {
-         return station == null ? "-" : station.name
-            + " | edgeLen=" + String.format("%.1f", CreateApi.length(edge))
-            + " pos=" + (Double.isFinite(positionOnEdge) ? String.format("%.1f", positionOnEdge) : "NaN");
-      }
-   }
-
+   // StationEdge 类已随站点边缓存一起删除（1.2.0，0 调用方）
    /** 路线的一段：某条边 + 它在本段里的起点弧长 + 是否反向走。 */
    public static final class Leg {
       public final TrackEdge edge;
@@ -207,70 +184,11 @@ public final class RailCache {
       }
    }
 
-   // ================================================================ 站点边缓存（图级，跨实例共享）
 
-   private static final Map<String, StationEdge> STATION_EDGES = new ConcurrentHashMap<>();
+   // ================================================================ 站点边缓存（1.2.0 删除）
+   // 原来这里有一个 StationEdge/STATION_EDGES 图级缓存 + stationEdge(...) 探针，
+   // 但全类外部【0 个调用方】（铁律 11 的死代码）。距站唯一来源是 RailSearch 的路线弧长。
 
-   private static String keyOf(GlobalStation st) {
-      if (st == null) return "?";
-      BlockPos bp = CreateApi.blockPosOf(st);
-      return st.name + "@" + (bp == null ? "?" : bp.toShortString());
-   }
-
-   public static void invalidateStation(GlobalStation st) {
-      STATION_EDGES.remove(keyOf(st));
-   }
-
-   public static void invalidateAll() {
-      STATION_EDGES.clear();
-   }
-
-   public static int cacheSize() {
-      return STATION_EDGES.size();
-   }
-
-   /**
-    * ① 找站点边：让 Create 沿轨走，等 STATION 边点事件。
-    * dir &gt; 0 从车头方向探，dir &lt; 0 从车尾方向探。
-    * 命中后把 Couple&lt;TrackNode&gt; 换成 TrackEdge 存起来，之后同站不再走。
-    */
-   public static StationEdge stationEdge(TrackGraph g, TravellingPoint from, int dir, GlobalStation st, double maxDist) {
-      if (g == null || from == null || from.edge == null || st == null) return null;
-
-      String key = keyOf(st);
-      StationEdge cached = STATION_EDGES.get(key);
-      if (cached != null && cached.edge != null) return cached;
-
-      TravellingPoint p = CreateApi.copy(from);
-      if (p == null) return null;
-
-      StationEdge[] found = new StationEdge[1];
-      TravellingPoint.ITrackSelector selector = CreateApi.noUturn(p);
-      TravellingPoint.IEdgePointListener listener = (distance, pair) -> {
-         if (pair.getFirst() instanceof GlobalStation hit && hit == st) {
-            TrackNode a = pair.getSecond().getFirst();
-            TrackNode b = pair.getSecond().getSecond();
-            TrackEdge e = CreateApi.edgeBetween(g, a, b);
-            if (e != null) {
-               double pos = CreateApi.positionOn(st, e);
-               found[0] = new StationEdge(st, e, a, b, pos);
-            }
-            return false; // 命中即停
-         }
-         return true;     // 继续走
-      };
-
-      double signed = Math.abs(maxDist <= 0.0 ? 6000.0 : maxDist) * (dir >= 0 ? 1.0 : -1.0);
-      CreateApi.travel(p, g, signed, selector, listener);
-
-      if (found[0] != null) {
-         STATION_EDGES.put(key, found[0]);
-         HexieTrain.LOGGER.info("[rail] 站点边命中 {} | {}", key, found[0].describe());
-      } else {
-         HexieTrain.LOGGER.warn("[rail] 站点边未命中 {} dir={} 走了={}", key, dir, String.format("%.1f", Math.abs(signed)));
-      }
-      return found[0];
-   }
    public static Route buildRoute(TrackGraph g, GlobalStation target, List<Couple<TrackNode>> couples) {
       Route route = new Route(target);
       if (g == null || couples == null || couples.isEmpty()) return route;

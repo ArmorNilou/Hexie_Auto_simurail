@@ -5,12 +5,13 @@
   "compatibilityLevel": "JAVA_21",
   "mixins": [
     "CarriageAnchorMixin",
-        "TrainFreezeMixin",
+    "CarriageNameMixin",
+    "TrainCrashMixin",
     "NavTrackFilterMixin",
     "TrainSpeedInjectMixin",
     "TrainFuelMixin",
     "DimensionalCarriageWriteMixin",
-        "DimensionalCarriageAlignMixin"
+    "DimensionalCarriageAlignMixin"
   ],
   "client": [],
   "injectors": {

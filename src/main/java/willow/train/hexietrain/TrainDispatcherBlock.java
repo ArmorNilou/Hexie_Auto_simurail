@@ -177,6 +177,9 @@ public class TrainDispatcherBlock extends DirectionalAxisKineticBlock implements
       return InteractionResult.SUCCESS;
    }
 
+   /**
+    * 空手右键 ⇒ 开界面（命名走 {@link TrainNaming} 的事件，不在这里）。
+    */
    public InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player, BlockHitResult hit) {
       if (!AllItems.WRENCH.isIn(player.getMainHandItem()) && !AllItems.WRENCH.isIn(player.getOffhandItem())) {
          if (!level.isClientSide && level.getBlockEntity(pos) instanceof TrainDispatcherBlockEntity be) {
@@ -203,6 +206,10 @@ public class TrainDispatcherBlock extends DirectionalAxisKineticBlock implements
 
             be.dropRebuiltSchedule();
             be.dissolve();
+            // 调度器被破坏 ⇒ 只清这一个调度器自己的绑定表（表在 BE 的 NBT 里，按调度器隔离）。
+            // 顺带把换向器和每根转向架的遥控条目一起松开：方块没了就没人 tick 它，
+            // 换向器会一直保持 engage 的那个面，车就没人管地继续被推着走。
+            be.clearBindings("调度器被破坏");
 
             for (int i = 1; i < TrainDispatcherContainer.SIZE; i++) {
                be.setSlot(i, ItemStack.EMPTY);
