@@ -20,6 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3d;
 import org.joml.Vector3dc;
 
@@ -190,10 +191,18 @@ public final class BogeySteering {
          return;
       }
 
-      // 曲线判据要的是转向架自己的 lateral；拿不到就保持上次，不清零
-      Vector3dc lateral = lateralOf(axle, pos);
+      // ===== 判据用的"行进右"必须**全车一致**，不能取每根转向架自己的 trackFrame.lateral =====
+      // 2026-11-22 21:10 实机日志（1.2.5）钉死了这件事：
+      //   20481031 打【行进右】(+) → 过节点 实际上了=弯 38.56m ⇒ 命中
+      //   20481034 打【行进左】(−) → 过节点 实际上了=直 14.00m ⇒ ❌
+      // 同一条目标边、同一个岔口，一根打 + 走对了、一根打 − 走了直股
+      // ⇒ 两根轴要的是**同一个符号**，而它们算出相反符号，是因为各自 trackFrame 的朝向相反
+      //   （trackFrame 会被 trackAxleFrame.direction 翻正，而那是每根转向架自己的朝向）。
+      // ⇒ Simurail 在选择那一刻用的是**轨道方向的横向**，不是转向架的朝向。
+      // 所以这里改成用"行进方向 × 上"算行进右，全车四根转向架必然算出同一个符号。
+      Vector3dc lateral = travelRightOf(tp);
       if (lateral == null) {
-         keepOrRelease(st, level, anchor, pos, "读不到 trackFrame.lateral");
+         keepOrRelease(st, level, anchor, pos, "算不出行进方向");
          return;
       }
 
@@ -395,7 +404,31 @@ public final class BogeySteering {
 
    // ================================================================ 判据
 
-   /** 转向架自己的"行进右"向量。拿不到就返回 null（调用方放直行，不猜）。 */
+   /**
+    * 行进右 = 行进方向 × 上。**全车一致**：只看这根轴走在哪条边、朝哪一头，
+    * 不看转向架自己的朝向（那个会被 trackAxleFrame.direction 翻正，各转向架可能相反）。
+    */
+   private static Vector3dc travelRightOf(TravellingPoint p) {
+      if (p == null || p.edge == null) {
+         return null;
+      }
+      try {
+         boolean alongEdge = (p.node1 == p.edge.node1);
+         Vec3 d = alongEdge ? p.edge.getDirection(false) : p.edge.getDirection(true).scale(-1.0);
+         if (d == null || d.lengthSqr() < 1.0E-8) {
+            return null;
+         }
+         Vec3 r = d.cross(new Vec3(0.0, 1.0, 0.0));
+         if (r.lengthSqr() < 1.0E-8) {
+            return null;
+         }
+         return new Vector3d(r.x, r.y, r.z);
+      } catch (Throwable t) {
+         return null;
+      }
+   }
+
+   /** 转向架自己的"行进右"向量。**只用于日志/诊断**，判据不许用它（见 tickOne 里的注释）。 */
    private Vector3dc lateralOf(PhysicsBogeyAxle axle, BlockPos pos) {
       try {
          var frame = axle.getTrackFrame();
