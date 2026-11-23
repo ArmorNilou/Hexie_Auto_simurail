@@ -39,6 +39,16 @@ public final class RailCache {
       public final double startS;
       public final boolean reversed;
 
+      /**
+       * <b>预置走法（2026-11-23）</b>：这一段从 {@code exitNode} 离开，接着走 {@code nextEdge}。
+       *
+       * <p>这两个字段在<b>建路线的时候</b>就定死，运行期只查表 —— 于是"这个岔口该走哪一股"
+       * 不需要在车上现算，也不再依赖"当前边在路线里排第几"（那条路在连续岔道上很脆）。
+       * 最后一段两者都是 null，表示再往前就出路线了。
+       */
+      public TrackNode exitNode = null;
+      public TrackEdge nextEdge = null;
+
       public Leg(TrackEdge edge, double startS, boolean reversed) {
          this.edge = edge;
          this.startS = startS;
@@ -175,6 +185,44 @@ public final class RailCache {
          return best;
       }
 
+      /**
+       * <b>把每个岔口该怎么走预先定死。</b>
+       *
+       * <p>对路线里相邻的两段求它们的共用节点 J：{@code legs[i].exitNode = J}，
+       * {@code legs[i].nextEdge = legs[i+1].edge}。运行期每根轴只要问"我这段的出口节点和下一段是哪条"，
+       * 再取下一条边的<b>远端节点</b>当 `currentPath` 喂进去 —— 该岔口就定了。
+       *
+       * <p>这就是"每根轴只在岔口选一次，上对了路就不用管了"能成立的前提：
+       * 一旦轴落到那条边上，轨道自身会把它约束住，不需要保持、不需要锁、不需要算腿长。
+       */
+      public void planTurnouts() {
+         for (int i = 0; i < this.legs.size(); i++) {
+            Leg l = this.legs.get(i);
+            if (i + 1 >= this.legs.size()) {
+               l.exitNode = null;
+               l.nextEdge = null;
+               continue;
+            }
+            Leg n = this.legs.get(i + 1);
+            l.exitNode = sharedNode(l.edge, n.edge);
+            l.nextEdge = n.edge;
+         }
+      }
+
+      /** 两条边的共用节点（节点对象身份，来自同一张图）。没有就 null。 */
+      private static TrackNode sharedNode(TrackEdge a, TrackEdge b) {
+         if (a == null || b == null) {
+            return null;
+         }
+         if (a.node1 != null && (a.node1 == b.node1 || a.node1 == b.node2)) {
+            return a.node1;
+         }
+         if (a.node2 != null && (a.node2 == b.node1 || a.node2 == b.node2)) {
+            return a.node2;
+         }
+         return null;
+      }
+
       public String describe() {
          return (this.target == null ? "-" : this.target.name)
             + " 边数=" + this.legs.size()
@@ -207,6 +255,7 @@ public final class RailCache {
       route.total = acc;
 
       collectPoints(g, route);
+      route.planTurnouts();
       return route;
    }
 
@@ -224,6 +273,7 @@ public final class RailCache {
       }
       route.total = end;
       collectPoints(g, route);
+      route.planTurnouts();
       return route;
    }
 
