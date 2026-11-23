@@ -445,14 +445,14 @@ public final class BogeySteering {
                // 【2026-11-23 加前提】只有岔口上真的存在弯候选，符号才有资格被怀疑。
                // 候选全是直边的话 steer() 根本不看 steerValue，翻它等于把一次"路径失败"
                // 记成"符号错"，之后这根轴的极性被永久污染。
-               if (st.hadCurve) {
+               if (st.side != 0 && st.hadCurve) {
                   int cur = this.frameFlip.getOrDefault(pos, 1);
                   this.frameFlip.put(pos, -cur);
-                  HexieTrain.LOGGER.warn("[steer] {} 过岔失手（岔口有弯候选）⇒ 该轴横向校准翻成 {}（下次按这个打）",
-                     pos.toShortString(), -cur);
+                  HexieTrain.LOGGER.warn("[steer] {} 过岔失手（舵={} 且岔口有弯候选）⇒ 该轴横向校准翻成 {}（下次按这个打）",
+                     pos.toShortString(), st.side, -cur);
                } else {
-                  HexieTrain.LOGGER.warn("[steer] {} 过岔失手但岔口没有弯候选 ⇒ steer 本来就不看这个值，不校准（不是符号问题）",
-                     pos.toShortString());
+                  HexieTrain.LOGGER.warn("[steer] {} 过岔失手但舵={} / 弯候选={} ⇒ steer 不看这个值，不校准（不是符号问题）",
+                     pos.toShortString(), st.side, st.hadCurve);
                }
             }
             HexieTrain.LOGGER.info(
@@ -473,12 +473,16 @@ public final class BogeySteering {
       }
       st.lastEdge = tp.edge;
 
-      if (st.hold > 0) {
-         st.hold--;
-         write(level, anchor, pos, st);
-         return;
-      }
-
+      // ===== 2026-11-23 定案：喂 currentPath 必须每拍都做，不能排在 hold/locked 后面 =====
+      // 只要 navigate() 拿到的 dest 正好等于"即将到达的那个岔口节点"，它内部那句
+      //   candEdge.node1 != first && candEdge.node2 != second
+      // 对【全部】候选恒为 false（因为从该节点出去的每条边 node1 都等于它），
+      // 于是直接 return 候选[0] —— 一条跟路线完全无关的固定分支。
+      //
+      // 19:55:41 / 19:55:42 两次走错就是它：当时舵=0，真候选[弯38.56m(右) ｜ 直14.00m]，
+      // 复刻 steer() 会选【直14.00m】，实走却是未过滤候选表的第一条 弯48.45m。
+      // 而 hold(3 拍)/locked(10 拍) 的早退把短腿整段盖住（2m 那条要 6 拍），
+      // path 就停在上一腿的 dest 上一动没动。
       TrackEdge next = route.nextEdgeAfter(tp.edge);
       if (next == null) {
          // 这根轴已经不在路线上了 —— 但**不许单方面放直行**。
@@ -497,9 +501,17 @@ public final class BogeySteering {
       TrackNode junction = (next.node1 == tp.edge.node1 || next.node1 == tp.edge.node2)
          ? next.node1 : next.node2;
 
+      feedPath(bogey, next, junction, tp.edge, pos);   // ← 每拍都喂，让导航决定股道
+
       Vector3dc lateral = lateralOf(axle, pos);
       if (lateral == null) {
          keepOrRelease(st, level, anchor, pos, "读不到 trackFrame.lateral");
+         return;
+      }
+
+      if (st.hold > 0) {
+         st.hold--;
+         write(level, anchor, pos, st);
          return;
       }
 
@@ -507,6 +519,7 @@ public final class BogeySteering {
       // 2026-11-22 22:20 日志：78 次过节点里 1 次失手，就是最后几拍 trackFrame.lateral
       // 被 trackSegment.reverse() 翻了一次，我们重算出来的号跟 Simurail 读的那一刻不一致。
       // 岔口前 3 米的一次判定，比"每拍重算"更接近它读到的状态。
+      // 注意：锁只管【舵值】，不管 path —— path 已经在上面每拍喂过了。
       if (st.locked > 0) {
          st.locked--;
          write(level, anchor, pos, st);
@@ -540,7 +553,7 @@ public final class BogeySteering {
       //   if(sw != null) { target = sw.selectTarget(pair.getSecond()); if(target != null) return target; }
       // 也就是说：有岔道方块时，写多少 steer 都没用，走哪股由那个方块的 state 决定。
       // 所以必须在过岔之前把方块扳到我们要的那一侧。
-      feedPath(bogey, next, junction, tp.edge, pos);   // ← 让导航决定股道（currentPath → navigate）
+
       throwSwitch(level, axle.getTrackGraph(), tp, next, pos);
 
       st.kept = false;
@@ -801,7 +814,24 @@ public final class BogeySteering {
          if (!(len > 0.2)) {
             return null;
          }
-         TravellingPoint probe = new TravellingPoint(src.node1, src.node2, src.edge, len - 0.05, src.upsideDown);
+         // 哪一端才是"前进的那一端"：只看几何，不猜 Create 的 node1/node2 约定。
+         // 轴可能走在反相的那条边对象上（Create 每条轨正反是两个 TrackEdge），
+         // 一律当成 len-0.05 往前推的话，探针会往【刚走过】的那个岔口走，
+         // 抓回来的候选跟真正的岔口根本不是一个
+         //（2026-11-23 首轮取证：62 次里只有 6 次的候选含"想要"那条）。
+         boolean farIsNode2 = true;
+         try {
+            Vec3 here = CreateApi.worldPosition(g, src);
+            Vec3 p1 = src.edge.node1 == null ? null : src.edge.node1.getLocation().getLocation();
+            Vec3 p2 = src.edge.node2 == null ? null : src.edge.node2.getLocation().getLocation();
+            if (here != null && p1 != null && p2 != null) {
+               farIsNode2 = here.distanceTo(p2) > here.distanceTo(p1);
+            }
+         } catch (Throwable ignored) {
+         }
+         double startPos = farIsNode2 ? Math.max(0.0, len - 0.05) : 0.05;
+         double dist = farIsNode2 ? 0.1 : -0.1;
+         TravellingPoint probe = new TravellingPoint(src.node1, src.node2, src.edge, startPos, src.upsideDown);
          List<Map.Entry<TrackNode, TrackEdge>> cap = new ArrayList<>();
          TravellingPoint.ITrackSelector sel = (graph, pair) -> {
             List<Map.Entry<TrackNode, TrackEdge>> c = pair.getSecond();
@@ -810,7 +840,7 @@ public final class BogeySteering {
             }
             return c == null || c.isEmpty() ? null : c.get(0);
          };
-         probe.travel(g, 0.1, sel);
+         probe.travel(g, dist, sel);
          return cap;
       } catch (Throwable t) {
          return null;
@@ -1049,7 +1079,13 @@ public final class BogeySteering {
             if (sb.length() > 0) {
                sb.append(" ｜ ");
             }
-            sb.append(String.format("%s%.2fm turn%+.5f", e.isTurn() ? "弯" : "直", e.getLength(), t));
+            String farTxt = "?";
+            try {
+               TrackNode far = (e.node1 == j) ? e.node2 : e.node1;
+               farTxt = far == null ? "?" : String.valueOf(far.getLocation().getLocation());
+            } catch (Throwable ignored) {
+            }
+            sb.append(String.format("%s%.2fm turn%+.5f→%s", e.isTurn() ? "弯" : "直", e.getLength(), t, farTxt));
          }
          HexieTrain.LOGGER.info("[steer] {} 岔口候选（本轴 trackFrame 算 turn）：{}", pos.toShortString(), sb);
       } catch (Throwable t) {
