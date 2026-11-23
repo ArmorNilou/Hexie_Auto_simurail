@@ -95,11 +95,40 @@ public final class BogeySteering {
    /** 让权日志：每个位置只打一次 */
    private final Set<BlockPos> yieldLogged = new HashSet<>();
 
-   /** 喂 currentPath 时每个位置只打一次 */
-   private final Set<BlockPos> pathLogged = new HashSet<>();
+   /** currentPath 的 dest 上一次打出去的内容：只有 dest 变了才打，避免每拍刷屏 */
+   private final Map<BlockPos, String> pathDestLogged = new HashMap<>();
+
+   /** "目标边和当前边不接"每个位置只报一次 */
+   private final Set<BlockPos> pathBrokenLogged = new HashSet<>();
+
+   /** "清空 currentPath"每个位置只报一次（抓静默清路） */
+   private final Set<BlockPos> pathClearedLogged = new HashSet<>();
 
    /** currentPath 写入失败只报一次 */
    private boolean warnedPath = false;
+
+   /**
+    * PhysicsBogeyAxle.currentPath（protected），只反射一次。
+    *
+    * <p>为什么必须读它：2026-11-23 19:23:06 那次连续岔道走错已经证明
+    * <ul>
+    *   <li>四根轴的 steer 值全程 0（日志里最后一条值变更是 19:22:23.749）；</li>
+    *   <li>steer() 在 steerValue==0 时只可能返回直边，不可能返回那条 34.63m 的弯。</li>
+    * </ul>
+    * 所以那一次是 navigate() 决定的，而它只有在"喂进去的节点 == 即将到达的岔口节点"
+    * 时才会退化成"取候选第一条"。path 停在哪一腿，只能读出来看。读不到不影响主流程。
+    */
+   private static final Field CURRENT_PATH;
+
+   static {
+      Field cf = null;
+      try {
+         cf = PhysicsBogeyAxle.class.getDeclaredField("currentPath");
+         cf.setAccessible(true);
+      } catch (Throwable ignored) {
+      }
+      CURRENT_PATH = cf;
+   }
 
    /** 每根轴的横向翻转校准：+1 原样、−1 取反。靠过节点命中/失手闭环学出来，不靠猜。 */
    private final Map<BlockPos, Integer> frameFlip = new HashMap<>();
@@ -131,6 +160,12 @@ public final class BogeySteering {
       boolean kept = false;
       /** 上一次判定的目标边摘要，只给日志用 */
       String note = "-";
+      /** 判定那一刻 Create 真正交给选择器的候选（过了 canTravelTo 之后），只给日志用 */
+      String candNote = "-";
+      /** 判定那一刻复刻 Simurail steer() 算出来的选择，只给日志用 */
+      String candWhy = "-";
+      /** 候选里有没有弯边：自校准能不能把这次失手归咎于符号，就看它 */
+      boolean hadCurve = false;
       /** "写了却没生效"只警告一次（下一次生效时复位） */
       boolean warnedNotApplied = false;
    }
@@ -231,9 +266,20 @@ public final class BogeySteering {
     * （别的候选的 node1 都是上游节点：若 first 填上游节点，则 node1 相等 ⇒ 条件为假 ⇒ 会误命中）。
     * 所以传 `Couple(dest, dest)`。
     */
-   private void feedPath(PhysicsBogeyBlockEntity bogey, TrackEdge next, TrackNode junction) {
+   private void feedPath(PhysicsBogeyBlockEntity bogey, TrackEdge next, TrackNode junction, TrackEdge cur, BlockPos pos) {
       try {
          if (bogey == null || next == null || junction == null) {
+            return;
+         }
+         // 目标边必须和当前边真的共用那个岔口节点。不共用 ⇒ junction/dest 都是从 next.node2 硬凑的假值，
+         // 喂进去只会让 navigate() 去匹配一个跟这个岔口无关的节点。宁可不喂。
+         if (cur != null && next.node1 != cur.node1 && next.node1 != cur.node2
+               && next.node2 != cur.node1 && next.node2 != cur.node2) {
+            if (this.pathBrokenLogged.add(pos)) {
+               HexieTrain.LOGGER.warn("[path] {} 目标边 {}m 和当前边 {}m 不共用节点 ⇒ 不喂 currentPath",
+                  pos.toShortString(), String.format("%.2f", next.getLength()),
+                  String.format("%.2f", cur.getLength()));
+            }
             return;
          }
          TrackNode dest = (next.node1 == junction) ? next.node2 : next.node1;
@@ -241,9 +287,11 @@ public final class BogeySteering {
             return;
          }
          List<Couple<TrackNode>> path = List.of(Couple.create(dest, dest));
-         if (this.pathLogged.add(bogey.getBlockPos())) {
-            HexieTrain.LOGGER.info("[path] {} 喂 currentPath：dest={} 目标边={}m（导航优先，steer 只兜底）",
-               bogey.getBlockPos().toShortString(), dest.getLocation().getLocation(),
+         String destTxt = String.valueOf(dest.getLocation().getLocation());
+         String lastDest = this.pathDestLogged.put(pos, destTxt);
+         if (!destTxt.equals(lastDest)) {
+            HexieTrain.LOGGER.info("[path] {} 喂 currentPath：dest={} 目标边={} {}m（导航优先，steer 只兜底）",
+               pos.toShortString(), destTxt, next.isTurn() ? "弯" : "直",
                String.format("%.2f", next.getLength()));
          }
          PhysicsBogeyAxle front = bogey.getAxle(true);
@@ -263,13 +311,22 @@ public final class BogeySteering {
    }
 
    /** 不在导航里就把 currentPath 清空，别让旧路径继续指挥。 */
-   private void clearPath(ServerLevel level, BlockPos pos) {
+   private void clearPath(ServerLevel level, BlockPos pos, String why) {
       try {
          if (!level.hasChunkAt(pos)) {
             return;
          }
          if (!(level.getBlockEntity(pos) instanceof PhysicsBogeyBlockEntity bogey)) {
             return;
+         }
+         // 取证：只有真的清掉了一条非空路径才报（抓"静默清路"导致 navigate 失明）
+         if (!this.pathClearedLogged.contains(pos)) {
+            PhysicsBogeyAxle fa = bogey.getAxle(true);
+            String oldPath = readPath(fa);
+            if (oldPath != null && !oldPath.startsWith("空")) {
+               this.pathClearedLogged.add(pos);
+               HexieTrain.LOGGER.info("[path] {} 清空 currentPath（{}）原内容=[{}]", pos.toShortString(), why, oldPath);
+            }
          }
          List<Couple<TrackNode>> empty = List.of();
          PhysicsBogeyAxle front = bogey.getAxle(true);
@@ -347,7 +404,7 @@ public final class BogeySteering {
    public void releaseAll(ServerLevel level, BlockPos anchor, BogeyRoster roster) {
       for (BlockPos pos : roster.positions()) {
          State st = this.states.computeIfAbsent(pos, k -> new State());
-         clearPath(level, pos);
+         clearPath(level, pos, "退出导航/手操");
          st.side = 0;
          st.hold = 0;
          write(level, anchor, pos, st);
@@ -378,23 +435,35 @@ public final class BogeySteering {
       }
 
       // 跨过节点 = 这个轴的 edge 变了。变了就进入"保持"窗口
+      boolean edgeChanged = false;
       if (st.lastEdge != null && !RailCache.sameLink(st.lastEdge, tp.edge)) {
+         edgeChanged = true;
          if (st.wanted != null) {
             boolean hit = RailCache.sameLink(st.wanted, tp.edge);
             if (!hit) {
                // 闭环校准：这根轴这次算的号跟 Simurail 选的不一致 ⇒ 记住"这根轴的横向要取反"。
-               // 下次直接用它，不再每拍靠 trackFrame 现算（那玩意儿会在 trackSegment.reverse() 时翻）。
-               int cur = this.frameFlip.getOrDefault(pos, 1);
-               this.frameFlip.put(pos, -cur);
-               HexieTrain.LOGGER.warn("[steer] {} 过岔失手 ⇒ 该轴横向校准翻成 {}（下次按这个打）", pos.toShortString(), -cur);
+               // 【2026-11-23 加前提】只有岔口上真的存在弯候选，符号才有资格被怀疑。
+               // 候选全是直边的话 steer() 根本不看 steerValue，翻它等于把一次"路径失败"
+               // 记成"符号错"，之后这根轴的极性被永久污染。
+               if (st.hadCurve) {
+                  int cur = this.frameFlip.getOrDefault(pos, 1);
+                  this.frameFlip.put(pos, -cur);
+                  HexieTrain.LOGGER.warn("[steer] {} 过岔失手（岔口有弯候选）⇒ 该轴横向校准翻成 {}（下次按这个打）",
+                     pos.toShortString(), -cur);
+               } else {
+                  HexieTrain.LOGGER.warn("[steer] {} 过岔失手但岔口没有弯候选 ⇒ steer 本来就不看这个值，不校准（不是符号问题）",
+                     pos.toShortString());
+               }
             }
             HexieTrain.LOGGER.info(
-               "[steer] {} 过节点 实际上了={} {} ｜ 想要={} {} ⇒ {}",
+               "[steer] {} 过节点 实际上了={} {} ｜ 想要={} {} ⇒ {} ｜ 当时舵={} ｜ 真候选[{}] ｜ steer会选[{}]",
                pos.toShortString(),
                tp.edge.isTurn() ? "弯" : "直", String.format("%.2fm", tp.edge.getLength()),
                st.wanted.isTurn() ? "弯" : "直", String.format("%.2fm", st.wanted.getLength()),
-               hit ? "命中" : "❌ 走错股道"
+               hit ? "命中" : "❌ 走错股道",
+               st.side, st.candNote, st.candWhy
             );
+            logCurrentPath(axle, pos, "过节点时");
             dumpCandidates(axle, st.lastEdge, tp.edge, pos);
             st.wanted = null;
          }
@@ -456,13 +525,22 @@ public final class BogeySteering {
       st.wanted = next;
       st.note = (next.isTurn() ? "弯" : "直") + String.format(" %.2fm", next.getLength());
 
+      // ===== 取证：把 Create 真正交给选择器的候选抓下来，再复刻 Simurail 的 steer() 算它会挑哪条 =====
+      // 只在换边那一拍做一次（岔口锁住之后不会重算，抓一次就够）
+      if (edgeChanged) {
+         List<Map.Entry<TrackNode, TrackEdge>> real = realCandidates(axle);
+         st.hadCurve = hasCurve(real, lateral);
+         st.candNote = describeCandidates(real, lateral);
+         st.candWhy = describeSteerPick(real, lateral, st.side);
+      }
+
       // ===== 真正的道岔：simurail:track_switch =====
       // steer 值只是"没有岔道方块时的默认选择器"。只要岔口上装了 TrackSwitch 且它 isActive()，
       // Simurail 的 TravellingPointMixin 会在 TravellingPoint.travel 里**直接把我们的选择器顶掉**：
       //   if(sw != null) { target = sw.selectTarget(pair.getSecond()); if(target != null) return target; }
       // 也就是说：有岔道方块时，写多少 steer 都没用，走哪股由那个方块的 state 决定。
       // 所以必须在过岔之前把方块扳到我们要的那一侧。
-      feedPath(bogey, next, junction);   // ← 让导航决定股道（currentPath → navigate）
+      feedPath(bogey, next, junction, tp.edge, pos);   // ← 让导航决定股道（currentPath → navigate）
       throwSwitch(level, axle.getTrackGraph(), tp, next, pos);
 
       st.kept = false;
@@ -617,7 +695,7 @@ public final class BogeySteering {
    }
 
    private void release(State st, ServerLevel level, BlockPos anchor, BlockPos pos) {
-      clearPath(level, pos);
+      clearPath(level, pos, "放直行");
       st.side = 0;
       st.hold = 0;
       write(level, anchor, pos, st);
@@ -699,6 +777,251 @@ public final class BogeySteering {
     * turn 用的是**本轴自己的** {@code getTrackFrame().lateral()}，也就是 Simurail 在 steer() 里
     * 用的那一条，所以这一行就是它眼里的世界。
     */
+   /**
+    * <b>Create 真正交给选择器的候选</b>——不是我们自己去 getConnectionsFrom 拼的。
+    *
+    * <p>做法跟 Simurail updateTrack 里一模一样：把轴的 TravellingPoint 复制一份，放到边末尾 0.05m，
+    * 再让 Create 自己 travel 0.1m。它跨到节点时会回调选择器，回调参数里那份 list 就是
+    * <b>过了 canTravelTo 过滤之后</b>的候选——也就是 Simurail 的 steer() 真正看得到的那一份。
+    *
+    * <p>以前我们拿 getConnectionsFrom 直接当候选打日志，那份<b>没过滤</b>，里面混着
+    * "刚走过的那条反向边"，所以 straightTarget 到底是谁一直算不准。
+    */
+   private static List<Map.Entry<TrackNode, TrackEdge>> realCandidates(PhysicsBogeyAxle axle) {
+      try {
+         if (axle == null) {
+            return null;
+         }
+         TrackGraph g = axle.getTrackGraph();
+         TravellingPoint src = axle.getTrackPoint();
+         if (g == null || src == null || src.edge == null) {
+            return null;
+         }
+         double len = src.edge.getLength();
+         if (!(len > 0.2)) {
+            return null;
+         }
+         TravellingPoint probe = new TravellingPoint(src.node1, src.node2, src.edge, len - 0.05, src.upsideDown);
+         List<Map.Entry<TrackNode, TrackEdge>> cap = new ArrayList<>();
+         TravellingPoint.ITrackSelector sel = (graph, pair) -> {
+            List<Map.Entry<TrackNode, TrackEdge>> c = pair.getSecond();
+            if (c != null && !c.isEmpty()) {
+               cap.addAll(c);
+            }
+            return c == null || c.isEmpty() ? null : c.get(0);
+         };
+         probe.travel(g, 0.1, sel);
+         return cap;
+      } catch (Throwable t) {
+         return null;
+      }
+   }
+
+   /** 候选里有没有"真弯"：turn 值和本轴 lateral 点乘超过 EPSILON 才算。 */
+   private static boolean hasCurve(List<Map.Entry<TrackNode, TrackEdge>> cands, Vector3dc lateral) {
+      if (cands == null || lateral == null) {
+         return false;
+      }
+      for (Map.Entry<TrackNode, TrackEdge> e : cands) {
+         TrackEdge ed = e.getValue();
+         if (ed == null || !ed.isTurn()) {
+            continue;
+         }
+         try {
+            Vector3d c = new Vector3d();
+            SimurailMath.cachedControlPoints(ed.getTurn()).curvature(0.0, c);
+            if (Math.abs(c.dot(lateral)) >= SimurailMath.EPSILON) {
+               return true;
+            }
+         } catch (Throwable ignored) {
+         }
+      }
+      return false;
+   }
+
+   /** 候选摘要：直/弯 + 长度，弯的再带左右和 turn 值。 */
+   private static String describeCandidates(List<Map.Entry<TrackNode, TrackEdge>> cands, Vector3dc lateral) {
+      if (cands == null) {
+         return "抓不到";
+      }
+      if (cands.isEmpty()) {
+         return "空";
+      }
+      if (lateral == null) {
+         return "读不到lateral";
+      }
+      StringBuilder sb = new StringBuilder();
+      for (Map.Entry<TrackNode, TrackEdge> e : cands) {
+         TrackEdge ed = e.getValue();
+         if (ed == null) {
+            continue;
+         }
+         if (sb.length() > 0) {
+            sb.append(" ｜ ");
+         }
+         if (!ed.isTurn()) {
+            sb.append("直").append(String.format("%.2fm", ed.getLength()));
+            continue;
+         }
+         double turn = 0.0;
+         try {
+            Vector3d c = new Vector3d();
+            SimurailMath.cachedControlPoints(ed.getTurn()).curvature(0.0, c);
+            turn = c.dot(lateral);
+         } catch (Throwable ignored) {
+         }
+         sb.append("弯").append(String.format("%.2fm", ed.getLength()));
+         if (Math.abs(turn) < SimurailMath.EPSILON) {
+            sb.append("(平)");
+         } else if (turn < 0) {
+            sb.append(String.format("(左 %+.5f)", turn));
+         } else {
+            sb.append(String.format("(右 %+.5f)", turn));
+         }
+      }
+      return sb.toString();
+   }
+
+   /**
+    * <b>逐行复刻 Simurail PhysicsBogeyAxle.steer()</b>，只把 steerValue 换成我们当前的值，
+    * 算出"它这一刻会挑哪一条"。用来分清两种完全不同的失败：
+    * <ol>
+    *   <li>它挑的就是那条弯（候选里没有直边 / 舵值把它推进 rightTargets）⇒ 是我们给错值；</li>
+    *   <li>它挑的正是我们要的，实际却走了别的 ⇒ 根本没轮到 steer，是 navigate() 在决定。</li>
+    * </ol>
+    */
+   private static String describeSteerPick(List<Map.Entry<TrackNode, TrackEdge>> cands, Vector3dc lateral, int side) {
+      if (cands == null) {
+         return "抓不到";
+      }
+      if (cands.isEmpty()) {
+         return "空";
+      }
+      if (lateral == null) {
+         return "读不到lateral";
+      }
+      try {
+         int n = cands.size();
+         double[] turns = new double[n];
+         List<Integer> left = new ArrayList<>();
+         List<Integer> right = new ArrayList<>();
+         int straight = -1;
+         double minTurn = Double.MAX_VALUE;
+         double maxTurn = -Double.MAX_VALUE;
+         for (int i = 0; i < n; i++) {
+            TrackEdge ed = cands.get(i).getValue();
+            double turn = 0.0;
+            if (ed != null && ed.isTurn()) {
+               Vector3d c = new Vector3d();
+               SimurailMath.cachedControlPoints(ed.getTurn()).curvature(0.0, c);
+               turn = c.dot(lateral);
+               if (Math.abs(turn) < SimurailMath.EPSILON) {
+                  if (straight < 0) {
+                     straight = i;
+                  }
+               } else if (turn < 0) {
+                  left.add(i);
+               } else {
+                  right.add(i);
+               }
+            } else {
+               straight = i;
+            }
+            turns[i] = turn;
+            minTurn = Math.min(minTurn, turn);
+            maxTurn = Math.max(maxTurn, turn);
+         }
+         int best = -1;
+         if (straight >= 0 && (side == 0 || side < 0 && left.isEmpty() || side > 0 && right.isEmpty())) {
+            best = straight;
+         } else if (!left.isEmpty() && (side <= 0 || right.isEmpty())) {
+            best = nearestTurn(left, turns, side, minTurn, maxTurn);
+         } else {
+            best = nearestTurn(right, turns, side, minTurn, maxTurn);
+         }
+         if (best < 0) {
+            return "targets.get(0)";
+         }
+         TrackEdge ed = cands.get(best).getValue();
+         return (ed.isTurn() ? "弯" : "直") + String.format("%.2fm", ed.getLength());
+      } catch (Throwable t) {
+         return "复刻异常";
+      }
+   }
+
+   private static int nearestTurn(List<Integer> group, double[] turns, int side, double minTurn, double maxTurn) {
+      double a = Math.max(minTurn, 0.0);
+      double target = a + (maxTurn - a) * side;
+      int best = -1;
+      double bestDiff = Double.MAX_VALUE;
+      for (int i : group) {
+         double d = Math.abs(target - turns[i]);
+         if (d < bestDiff) {
+            bestDiff = d;
+            best = i;
+         }
+      }
+      return best;
+   }
+
+   /** 反射读 currentPath，把每个节点的位置打出来；节点已不在当前图里就标 ⚠旧对象。 */
+   private static String readPath(PhysicsBogeyAxle axle) {
+      if (axle == null) {
+         return null;
+      }
+      if (CURRENT_PATH == null) {
+         return "读不到(反射不可用)";
+      }
+      try {
+         Object v = CURRENT_PATH.get(axle);
+         if (!(v instanceof List<?> list)) {
+            return "非List";
+         }
+         if (list.isEmpty()) {
+            return "空";
+         }
+         TrackGraph g = axle.getTrackGraph();
+         StringBuilder sb = new StringBuilder();
+         for (Object o : list) {
+            if (!(o instanceof Couple<?> c)) {
+               continue;
+            }
+            if (sb.length() > 0) {
+               sb.append(" ｜ ");
+            }
+            Object a = c.getFirst();
+            Object b = c.getSecond();
+            sb.append(nodeTxt(g, a));
+            if (b != a) {
+               sb.append("→").append(nodeTxt(g, b));
+            }
+         }
+         return sb.length() == 0 ? "空" : sb.toString();
+      } catch (Throwable t) {
+         return "读失败:" + t.getMessage();
+      }
+   }
+
+   private static String nodeTxt(TrackGraph g, Object o) {
+      if (!(o instanceof TrackNode nd)) {
+         return "?";
+      }
+      String s = String.valueOf(nd.getLocation().getLocation());
+      try {
+         if (g != null && g.locateNode(nd.getLocation()) != nd) {
+            s = s + "⚠旧对象";
+         }
+      } catch (Throwable ignored) {
+      }
+      return s;
+   }
+
+   private void logCurrentPath(PhysicsBogeyAxle axle, BlockPos pos, String tag) {
+      try {
+         HexieTrain.LOGGER.info("[path] {} {} currentPath=[{}]", pos.toShortString(), tag, readPath(axle));
+      } catch (Throwable ignored) {
+      }
+   }
    private void dumpCandidates(PhysicsBogeyAxle axle, TrackEdge prev, TrackEdge taken, BlockPos pos) {
       try {
          TrackGraph g = axle == null ? null : axle.getTrackGraph();
