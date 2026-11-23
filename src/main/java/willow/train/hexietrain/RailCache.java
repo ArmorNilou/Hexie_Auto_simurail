@@ -112,6 +112,42 @@ public final class RailCache {
          return null;
       }
 
+      /**
+       * <b>带游标的段定位（2026-11-23）</b>：优先"我上次所在的那一段"，其次"它的下一段"，
+       * 实在对不上才全表扫。
+       *
+       * <p>为什么必须这样：{@link #legOf} 按"无序节点对"匹配并且只返回第一处。当同一段轨
+       * 在一趟里出现两次（折返、环线、站场里两条并联轨共用同一对节点），每一拍都可能挑到
+       * 不同的那一段，于是 {@code nextEdge} / {@code exitNode} 每拍在翻，喂给轴的 dest 也跟着翻。
+       * 2026-11-23 20:51 那三次「想要=直7.00m 实际上了=直16.00m」就是这么来的：
+       * 7m 那条的远端是 (-41,63,15.5)，可过岔那一刻 currentPath 已经是 (-48,63,15.5) ——
+       * 中途被另一拍的判定覆盖过，然后 navigate() 照着 (-48) 把车送进了 16m 那条。
+       *
+       * <p>游标是单调往前的：轴跨过一个节点，游标就前进一段，不会跳回去。
+       */
+      public Leg legAt(TrackEdge e, int hint) {
+         if (e == null || this.legs.isEmpty()) {
+            return null;
+         }
+         if (hint >= 0 && hint < this.legs.size() && sameLink(this.legs.get(hint).edge, e)) {
+            return this.legs.get(hint);
+         }
+         int next = hint + 1;
+         if (next >= 0 && next < this.legs.size() && sameLink(this.legs.get(next).edge, e)) {
+            return this.legs.get(next);
+         }
+         for (int i = 0; i < this.legs.size(); i++) {
+            if (sameLink(this.legs.get(i).edge, e)) {
+               return this.legs.get(i);
+            }
+         }
+         return null;
+      }
+
+      public int indexOfLeg(Leg leg) {
+         return leg == null ? -1 : this.legs.indexOf(leg);
+      }
+
       /** 边上位置 → 本段弧长 s。车不在本段上返回 NaN。 */
       public double sOf(TrackEdge e, double positionOnEdge) {
          Leg l = legOf(e);

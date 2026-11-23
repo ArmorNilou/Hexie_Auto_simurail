@@ -176,6 +176,9 @@ public final class BogeySteering {
       TrackEdge wanted1 = null;
       TrackEdge lastEdge2 = null;
       TrackEdge wanted2 = null;
+      /** 逐轴游标：这根轴现在走到路线第几段。单调往前，绝不回跳 */
+      int legIdx1 = -1;
+      int legIdx2 = -1;
       /** "写了却没生效"只警告一次（下一次生效时复位） */
       boolean warnedNotApplied = false;
    }
@@ -424,8 +427,8 @@ public final class BogeySteering {
       PhysicsBogeyAxle a2 = bogey.getAxle(false);
 
       // ===== 逐轴：各算各的，path 各写各的 =====
-      AxleVerdict v1 = judgeAxle(a1, route, pos, "前轴");
-      AxleVerdict v2 = judgeAxle(a2, route, pos, "后轴");
+      AxleVerdict v1 = judgeAxle(a1, route, pos, "前轴", st, true);
+      AxleVerdict v2 = judgeAxle(a2, route, pos, "后轴", st, false);
 
       // ===== 过岔记账（逐轴） =====
       checkCrossed(level, pos, a1, v1, st, true);
@@ -461,7 +464,8 @@ public final class BogeySteering {
     * 而 `navigate()` 是按<b>节点身份</b>匹配的（`candEdge.node1 != first && candEdge.node2 != second`），
     * 所以喂进去的 dest 必须是<b>这根轴</b>那个岔口的目标边远端节点 —— 喂别人的就是错的。
     */
-   private AxleVerdict judgeAxle(PhysicsBogeyAxle axle, RailCache.Route route, BlockPos pos, String tag) {
+   private AxleVerdict judgeAxle(PhysicsBogeyAxle axle, RailCache.Route route, BlockPos pos, String tag,
+                                 State st, boolean front) {
       AxleVerdict v = new AxleVerdict();
       if (axle == null) {
          v.why = "轴不存在";
@@ -491,11 +495,22 @@ public final class BogeySteering {
       // ===== 查预缓存里已经定死的"这一段岔口该怎么走" =====
       // 不再用 route.nextEdgeAfter(tp.edge) 现推：那条路按"边"找段，连续岔道上同一段短线
       // 可能被走两次，会取到第一处匹配的"下一条"。预置表是按<b>段</b>存的，天然带位置。
-      RailCache.Leg leg = route.legOf(tp.edge);
+      // 用【游标】定位，不用 route.legOf：后者按无序节点对只返回第一处，
+      // 同一段轨在路线里出现两次时会每拍翻段，dest 也跟着翻（20:51 那三次走错就是这么来的）。
+      int hint = front ? st.legIdx1 : st.legIdx2;
+      RailCache.Leg leg = route.legAt(tp.edge, hint);
       if (leg == null) {
          clearAxlePath(axle);
          v.why = "查不到 leg";
          return v;
+      }
+      int idx = route.indexOfLeg(leg);
+      if (idx >= 0) {
+         if (front) {
+            st.legIdx1 = idx;
+         } else {
+            st.legIdx2 = idx;
+         }
       }
       if (leg.nextEdge == null || leg.exitNode == null) {
          // 这一段已经是路线最后一段：清掉这根轴自己的 path，别让旧路径继续指挥
