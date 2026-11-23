@@ -166,6 +166,10 @@ public final class BogeySteering {
       String candWhy = "-";
       /** 候选里有没有弯边：自校准能不能把这次失手归咎于符号，就看它 */
       boolean hadCurve = false;
+      /** 判定那一刻抓到的真候选（Simurail 真正会看到的那份），留给"分支"判定用 */
+      List<Map.Entry<TrackNode, TrackEdge>> realCands = null;
+      /** 最后一拍的分支拍照：谁在带头、谁在跟随、follow 会选谁 */
+      String branchNote = "-";
       /** "写了却没生效"只警告一次（下一次生效时复位） */
       boolean warnedNotApplied = false;
    }
@@ -456,12 +460,12 @@ public final class BogeySteering {
                }
             }
             HexieTrain.LOGGER.info(
-               "[steer] {} 过节点 实际上了={} {} ｜ 想要={} {} ⇒ {} ｜ 当时舵={} ｜ 真候选[{}] ｜ steer会选[{}]",
+               "[steer] {} 过节点 实际上了={} {} ｜ 想要={} {} ⇒ {} ｜ 当时舵={} ｜ 真候选[{}] ｜ steer会选[{}] ｜ 分支[{}]",
                pos.toShortString(),
                tp.edge.isTurn() ? "弯" : "直", String.format("%.2fm", tp.edge.getLength()),
                st.wanted.isTurn() ? "弯" : "直", String.format("%.2fm", st.wanted.getLength()),
                hit ? "命中" : "❌ 走错股道",
-               st.side, st.candNote, st.candWhy
+               st.side, st.candNote, st.candWhy, st.branchNote
             );
             logCurrentPath(axle, pos, "过节点时");
             dumpCandidates(axle, st.lastEdge, tp.edge, pos);
@@ -503,6 +507,13 @@ public final class BogeySteering {
 
       feedPath(bogey, next, junction, tp.edge, pos);   // ← 每拍都喂，让导航决定股道
 
+      // 每拍拍一张"谁在做决定"的照片：过岔时打出来的就是最后一拍（真正决策那一刻）
+      try {
+         st.branchNote = describeControlBranch(bogey, bogey.getAxle(true), st.realCands)
+            + " ‖ " + describeControlBranch(bogey, bogey.getAxle(false), st.realCands);
+      } catch (Throwable ignored) {
+      }
+
       Vector3dc lateral = lateralOf(axle, pos);
       if (lateral == null) {
          keepOrRelease(st, level, anchor, pos, "读不到 trackFrame.lateral");
@@ -543,6 +554,7 @@ public final class BogeySteering {
       if (edgeChanged) {
          List<Map.Entry<TrackNode, TrackEdge>> real = realCandidates(axle);
          st.hadCurve = hasCurve(real, lateral);
+         st.realCands = real;
          st.candNote = describeCandidates(real, lateral);
          st.candWhy = describeSteerPick(real, lateral, st.side);
       }
@@ -800,6 +812,84 @@ public final class BogeySteering {
     * <p>以前我们拿 getConnectionsFrom 直接当候选打日志，那份<b>没过滤</b>，里面混着
     * "刚走过的那条反向边"，所以 straightTarget 到底是谁一直算不准。
     */
+   /**
+    * <b>直接说出 control() 这一刻走的是哪条分支。</b>
+    *
+    * <p>PhysicsBogeyAxle.control() 只有三种结局：
+    * <pre>
+    *   nextPoint == null   → currentPath 非空 ? navigate() : steer()
+    *   nextPoint != null   → follow(nextPoint) 成功就 return，失败再 steer()
+    * </pre>
+    * 而 nextPoint 取谁由 isCurrentFront() 决定，它是<b>按速度符号动态判的</b>：
+    * <pre>
+    *   return logicalFront &amp;&amp; speed &gt; 0 || !logicalFront &amp;&amp; speed &lt; 0;
+    * </pre>
+    * 所以同一个转向架的两根轴会随车前/后换角色：一根是"带头轴"（走 navigate/steer），
+    * 另一根是"跟随轴"（走 follow(other)）。而 follow() 只认节点身份：
+    * <pre>
+    *   if(entry.getKey() == other.node1 || entry.getKey() == other.node2) return entry;
+    * </pre>
+    * 只要另一根轴先上了某条支线，这根轴就会被"顺"过去 —— 错一股会连着错两股。
+    * 这一行就是为了把"到底是谁做的决定"钉死。
+    */
+   private static String describeControlBranch(PhysicsBogeyBlockEntity bogey, PhysicsBogeyAxle axle,
+                                               List<Map.Entry<TrackNode, TrackEdge>> real) {
+      if (axle == null) {
+         return "轴?";
+      }
+      String tag = bogey != null && axle == bogey.getAxle(true) ? "前轴" : "后轴";
+      try {
+         boolean curFront = axle.isCurrentFront();
+         PhysicsBogeyAxle partner = axle.other();
+         StringBuilder sb = new StringBuilder();
+         sb.append(tag).append("{isCur=").append(curFront ? 1 : 0);
+         sb.append(" other=").append(edgeTxt(partner == null ? null : partner.getTrackPoint()));
+         if (curFront) {
+            PhysicsBogeyBlockEntity ahead = bogey.getConnected(true);
+            sb.append(" 前连接=").append(ahead == null ? "无" : ahead.getBlockPos().toShortString());
+            sb.append(" 分支=").append(ahead == null ? "navigate/steer" : "follow(前连接)");
+         } else {
+            sb.append(" 分支=follow(other)→").append(followWouldPick(real, partner));
+         }
+         sb.append(" 有效舵=").append(String.format("%.1f", bogey.getGroupSteerValue()));
+         sb.append("}");
+         return sb.toString();
+      } catch (Throwable t) {
+         return tag + "{异常:" + t.getMessage() + "}";
+      }
+   }
+
+   /** 复刻 follow(other)：候选的键（下游节点）撞上另一根轴那条边的任一端，就选它。 */
+   private static String followWouldPick(List<Map.Entry<TrackNode, TrackEdge>> real, PhysicsBogeyAxle partner) {
+      if (partner == null) {
+         return "无对轴";
+      }
+      TravellingPoint op = partner.getTrackPoint();
+      if (op == null || op.edge == null) {
+         return "对轴无轨→steer";
+      }
+      if (real == null || real.isEmpty()) {
+         return "没候选→steer";
+      }
+      for (Map.Entry<TrackNode, TrackEdge> e : real) {
+         TrackNode key = e.getKey();
+         if (key != null && (key == op.node1 || key == op.node2)) {
+            TrackEdge ed = e.getValue();
+            return ed == null ? "?" : (ed.isTurn() ? "弯" : "直") + String.format("%.2fm", ed.getLength());
+         }
+      }
+      return "没匹配上→steer";
+   }
+
+   private static String edgeTxt(TravellingPoint tp) {
+      if (tp == null || tp.edge == null) {
+         return "无";
+      }
+      String a = tp.node1 == null ? "?" : String.valueOf(tp.node1.getLocation().getLocation());
+      String b = tp.node2 == null ? "?" : String.valueOf(tp.node2.getLocation().getLocation());
+      return (tp.edge.isTurn() ? "弯" : "直") + String.format("%.2fm", tp.edge.getLength()) + "[" + a + "→" + b + "]";
+   }
+
    private static List<Map.Entry<TrackNode, TrackEdge>> realCandidates(PhysicsBogeyAxle axle) {
       try {
          if (axle == null) {
