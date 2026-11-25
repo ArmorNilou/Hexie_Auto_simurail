@@ -36,6 +36,20 @@ public final class BogeyBraking {
    /** 每个转向架上一次写的值。用来避免"已经是 0 还每拍发 0"这种无意义操作。 */
    private final Map<BlockPos, Integer> lastWritten = new HashMap<>();
 
+   /**
+    * <b>当前制动力（0..15 的连续量，浮点）。</b>
+    *
+    * <p>调度器每 5 拍才决策一次，{@code brakeCmd} 会在 0 和 15 之间翻 —— 直接照抄就是阶跃，
+    * 物理车上表现成"刹满-滑-刹满-滑"。所以这里不直接下发目标值，而是让它<b>每拍朝目标线性靠拢</b>。
+    *
+    * <p>爬升速率由调用方按 Create 的加速度算好传进来（{@code rampTicks} = 0→15 用多少拍），
+    * 这样物理车的制动力上升节奏和 Create 那边速度下降的节奏是一套。
+    */
+   private float current = 0.0F;
+
+   /** 上一次打出的爬升速率，变了才打日志。 */
+   private int lastRampLogged = -1;
+
    /** 打日志限流：每个位置只报一次"第一次生效"。 */
    private final Map<BlockPos, Integer> firstApplied = new HashMap<>();
 
@@ -44,11 +58,26 @@ public final class BogeyBraking {
     *
     * <p>每 tick 调用。非 0 会每拍刷新续期；归零只在"上一次不是 0"时发一次。
     */
-   public void tick(ServerLevel level, BlockPos anchor, BogeyRoster roster, int demand) {
+   public void tick(ServerLevel level, BlockPos anchor, BogeyRoster roster, int demand, int rampTicks) {
       if (level == null || anchor == null || roster == null) {
          return;
       }
-      int value = encode(demand);
+      // ===== 线性爬升：每拍朝目标挪一小步，不再阶跃 =====
+      int ramp = Math.max(1, Math.min(400, rampTicks));
+      float step = 15.0F / ramp;
+      float target = Math.max(0, Math.min(15, demand));
+      if (this.current < target) {
+         this.current = Math.min(target, this.current + step);
+      } else if (this.current > target) {
+         this.current = Math.max(target, this.current - step);
+      }
+      if (ramp != this.lastRampLogged) {
+         this.lastRampLogged = ramp;
+         HexieTrain.LOGGER.info("[bbrake] 制动力爬升 0→15 用 {} 拍（{} 秒，按 Create 加速度换算）",
+            ramp, String.format("%.1f", ramp / 20.0));
+      }
+      int value = encode(Math.round(this.current));
+      int shown = Math.round(this.current);
       for (BlockPos pos : roster.positions()) {
          try {
             Integer last = this.lastWritten.get(pos);
@@ -63,10 +92,10 @@ public final class BogeyBraking {
                this.write(level, pos, anchor, value);
                this.lastWritten.put(pos, value);
                Integer seen = this.firstApplied.get(pos);
-               if (seen == null || seen != value) {
-                  this.firstApplied.put(pos, value);
-                  HexieTrain.LOGGER.info("[bbrake] {} 遥控制动 需求={}/15 ⇒ 发 {}/15（接收端平方后≈{}）",
-                     pos.toShortString(), demand, value,
+               if (seen == null || seen != shown) {
+                  this.firstApplied.put(pos, shown);
+                  HexieTrain.LOGGER.info("[bbrake] {} 遥控制动 爬升中={}/15 目标={}/15 ⇒ 发 {}/15（接收端平方后≈{}）",
+                     pos.toShortString(), shown, demand, value,
                      String.format("%.2f", (value / 15.0) * (value / 15.0)));
                }
             }
@@ -78,6 +107,7 @@ public final class BogeyBraking {
 
    /** 退出导航 / 手操 / 拆车：把所有绑定转向架的遥控制动条目清掉。 */
    public void releaseAll(ServerLevel level, BlockPos anchor, BogeyRoster roster) {
+      this.current = 0.0F;
       if (level == null || anchor == null || roster == null) {
          return;
       }
