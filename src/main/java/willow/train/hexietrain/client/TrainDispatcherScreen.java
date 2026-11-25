@@ -66,6 +66,21 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
    private static final int TOGGLE_X = 162;
    private static final int TOGGLE_W = 10;
    private static final int TOGGLE_H = 8;
+
+   /*
+    * 无线开关配色：绿 = 开启（默认），红 = 关闭。
+    * 之前用的 -11974327 / -10569647 其实都是灰色（0xFF494A49 / 0xFF5E5E5E），
+    * 开和关只差一档亮度，根本分不出来 —— 这里改成明确色相。
+    * 悬停不换色相，只把同一色相提亮（往白里拉），避免"亮了=状态变了"的误解。
+    */
+   private static final int C_TOGGLE_FRAME = 0xFF2B2B2B;
+   private static final int C_TOGGLE_FRAME_HOVER = 0xFFE8E8E8;
+   /** 开启：绿 */
+   private static final int C_TOGGLE_ON = 0xFF3FA34D;
+   private static final int C_TOGGLE_ON_HOVER = 0xFF5FD37A;
+   /** 关闭：红 */
+   private static final int C_TOGGLE_OFF = 0xFFC0392B;
+   private static final int C_TOGGLE_OFF_HOVER = 0xFFE8695A;
    private int browseIndex = -1;
 
    public TrainDispatcherScreen(TrainDispatcherMenu menu, Inventory playerInventory, Component title) {
@@ -292,12 +307,12 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
       int x = TOGGLE_X;
       int y = ROW_Y[row] + 4;
       boolean hover = isIn(mouseX, mouseY, x, y, TOGGLE_W, TOGGLE_H);
-      int frame = hover ? -14721089 : C_CELL_FRAME;
+      int frame = hover ? C_TOGGLE_FRAME_HOVER : C_TOGGLE_FRAME;
       int fill;
       if (on) {
-         fill = hover ? -10569647 : -11974327;
+         fill = hover ? C_TOGGLE_ON_HOVER : C_TOGGLE_ON;
       } else {
-         fill = hover ? C_SLOT_INNER : C_CELL_OFF;
+         fill = hover ? C_TOGGLE_OFF_HOVER : C_TOGGLE_OFF;
       }
       g.fill(x, y, x + TOGGLE_W, y + TOGGLE_H, frame);
       g.fill(x + 1, y + 1, x + TOGGLE_W - 1, y + TOGGLE_H - 1, fill);
