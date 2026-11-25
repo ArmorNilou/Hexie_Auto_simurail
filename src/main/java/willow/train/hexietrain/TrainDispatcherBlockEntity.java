@@ -2385,7 +2385,12 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
       // ===== 曲线速度：vT 是唯一公式，dv 决定 加/滑/刹 =====
       // 停车距离曲线用的是【制动减速度】，不是 Create 的加速能力——这是两回事。
       // 之前误用 train.acceleration()（还被 max(0.05,…) 兜底）⇒ vT 全段只有 2~4 m/s ⇒ 永远滑车。
-      double vT = Math.max(0.4, Math.min(V_CRUISE_MPS, Math.sqrt(2.0 * A_BRAKE * Math.max(0.0, d - 0.5))));
+      // 目标速度曲线：vT = sqrt(2*a*(d-0.5))。
+      // 原来的 max(0.4, …) 下限在 d→0 时仍然要 0.4 m/s ⇒ 速度环里"停住"这件事根本不存在，
+      // 每次刹到 0 都会被判成"低于目标速度"又被给油，这也是往复的一份。
+      // 进到到站容差里就直接把目标速度打成 0。
+      double vTraw = Math.sqrt(2.0 * A_BRAKE * Math.max(0.0, d - 0.5));
+      double vT = d <= ARRIVE_TOL ? 0.0 : Math.max(0.4, Math.min(V_CRUISE_MPS, vTraw));
       // 前方有红信号、但还没进制动距离 ⇒ 用它压住目标速度，保证"永远停得住"。
       // 这一条是"看信号机"真正生效的地方：不是到跟前才刹，而是从一开始就不许快到刹不住。
       if (Double.isFinite(vSigCap) && vSigCap < vT) {
@@ -2401,6 +2406,12 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
          this.sigCapLogTicks = 0;
       }
       double dv = vT - v;
+      // ===== 滑车死区（|dv| ≤ DV_BAND）=====
+      // DV_BAND 这个常量早就声明了，但全文件从来没被引过 —— 滑车就是丢在这。
+      // 原来的判据是：dv > 0 就"行驶中"给油，只有 -BRK_BAND < dv ≤ 0 才算滑车，
+      // 死区只在负侧、宽 0.15。站前 dv 正负各半地翻，就变成"行驶中 ↔ 急刹"往复，
+      // 物理车上是一震一震，日志里则是 v 反复被推到 0 又被给油。
+      // 现在恢复成对称死区：|dv| ≤ DV_BAND 一律滑车，不给油也不刹。
 
       // 制动底线：老代码的距离路，防速度环跟不上
       double stopZone = Math.max(3.0, v * 1.2);
@@ -2408,19 +2419,21 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
       if (d < 1.0) brakeFloor = 15;
 
       int wantThrottle;
-      if (dv > 0.0) {
-         // 低于目标速度就推，**绝不滑车**：滑车只属于"已经到达或超过目标"的区间
+      if (dv > DV_BAND) {
+         // 低于目标速度、且超出死区才推。油门量也从"超出死区的那部分"算，
+         // 免得刚过死区就给满油门把自己又推过头。
          this.drivePhase = PH_RUN;
          this.brakeCmd = 0;
-         wantThrottle = (int) Math.round(15.0 * Math.min(1.0, dv / ACC_BAND));
-      } else if (dv > -BRK_BAND) {
+         wantThrottle = (int) Math.round(15.0 * Math.min(1.0, (dv - DV_BAND) / ACC_BAND));
+      } else if (dv > -DV_BAND) {
+         // 滑车：不输出传动也不输出刹车，让车自己滚
          this.drivePhase = PH_COAST;
          wantThrottle = 0;
          this.brakeCmd = 0;
       } else {
          this.drivePhase = PH_BRAKE;
          wantThrottle = 0;
-         this.brakeCmd = Math.max((int) Math.round(Math.min(15.0, (-dv) / DV_FULL * 15.0)), brakeFloor);
+         this.brakeCmd = Math.max((int) Math.round(Math.min(15.0, (-dv - DV_BAND) / DV_FULL * 15.0)), brakeFloor);
       }
 
       // 油门按固定速率逼近（执行器惯性）；刹车直接给，安全侧不延迟
