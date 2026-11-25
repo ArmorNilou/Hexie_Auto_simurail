@@ -265,6 +265,20 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
       return idx >= 0 && idx < DispatcherSettings.ENTRIES.length ? DispatcherSettings.ENTRIES[idx].label : "?";
    }
 
+   /**
+    * 这一项是不是"开关"（范围只有 0..1）。
+    *
+    * <p>开关不该画成数值步进器 —— 用户看到「转向架制动 = 1」配一个 +/− 完全不知道那是什么。
+    * 开关项在界面上显示"开/关"，只有一个"切换"按钮。
+    */
+   public boolean settingIsToggle(int idx) {
+      if (idx < 0 || idx >= DispatcherSettings.ENTRIES.length) {
+         return false;
+      }
+      DispatcherSettings.Entry e = DispatcherSettings.ENTRIES[idx];
+      return e.min == 0 && e.max == 1;
+   }
+
    public boolean bound() {
       return this.data.get(4) != 0;
    }

@@ -45,6 +45,9 @@ public class DispatcherSettingsScreen extends Screen {
    private static final int C_TEXT = 0xFF1A1A1A;
    private static final int C_TEXT_DIM = 0xFF5A5A5A;
    private static final int C_VALUE = 0xFF14521A;
+   /** 开关项：开=绿，关=红（和主界面无线开关一套配色）。 */
+   private static final int C_ON = 0xFF1B5E20;
+   private static final int C_OFF = 0xFFB03020;
 
    /** 齿轮按钮（和主界面同一个位置规格，按它返回）。 */
    private static final int GEAR_W = 15;
@@ -70,11 +73,21 @@ public class DispatcherSettingsScreen extends Screen {
 
       for (int i = 0; i < this.menu.settingCount(); i++) {
          final int base = DispatcherSettings.BUTTON_SETTING_BASE + i * 2;
+         final int idx = i;
          int y = this.top + HEAD_H + i * ROW_H + 2;
-         this.addRenderableWidget(Button.builder(Component.literal("-"), b -> this.send(base))
-            .bounds(this.left + PANEL_W - 62, y, 22, 18).build());
-         this.addRenderableWidget(Button.builder(Component.literal("+"), b -> this.send(base + 1))
-            .bounds(this.left + PANEL_W - 36, y, 22, 18).build());
+         if (this.menu.settingIsToggle(i)) {
+            // 开关项：一个"切换"按钮。方向按当前值决定（0 → 发 +1 变成 1；1 → 发 -1 变成 0），
+            // 复用同一套按钮编码，不需要额外的协议。
+            this.addRenderableWidget(Button.builder(Component.literal("切换"), b -> {
+               int cur = this.menu.settingValue(idx);
+               this.send(cur > 0 ? base : base + 1);
+            }).bounds(this.left + PANEL_W - 62, y, 48, 18).build());
+         } else {
+            this.addRenderableWidget(Button.builder(Component.literal("-"), b -> this.send(base))
+               .bounds(this.left + PANEL_W - 62, y, 22, 18).build());
+            this.addRenderableWidget(Button.builder(Component.literal("+"), b -> this.send(base + 1))
+               .bounds(this.left + PANEL_W - 36, y, 22, 18).build());
+         }
       }
 
       this.addRenderableWidget(Button.builder(Component.literal("返回调度器"), b -> this.returnToDispatcher())
@@ -179,8 +192,15 @@ public class DispatcherSettingsScreen extends Screen {
          int ry = this.top + HEAD_H + i * ROW_H;
          g.fill(this.left + 4, ry, this.left + PANEL_W - 4, ry + ROW_H - 2, C_ROW);
          g.drawString(this.font, this.menu.settingLabel(i), this.left + 10, ry + 6, C_TEXT, false);
-         String v = String.valueOf(this.menu.settingValue(i));
-         g.drawString(this.font, v, this.left + PANEL_W - 78 - this.font.width(v), ry + 6, C_VALUE, false);
+         if (this.menu.settingIsToggle(i)) {
+            boolean on = this.menu.settingValue(i) > 0;
+            String v = on ? "开" : "关";
+            int color = on ? C_ON : C_OFF;
+            g.drawString(this.font, v, this.left + PANEL_W - 78 - this.font.width(v), ry + 6, color, false);
+         } else {
+            String v = String.valueOf(this.menu.settingValue(i));
+            g.drawString(this.font, v, this.left + PANEL_W - 78 - this.font.width(v), ry + 6, C_VALUE, false);
+         }
       }
 
 
