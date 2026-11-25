@@ -16,7 +16,9 @@ final class WirelessChannel implements IRedstoneLinkable {
    }
 
    public int getTransmittedStrength() {
-      return this.be.output(this.channel);
+      // 通道开关关掉时必须发 0 —— 但 output() 仍保留"需求值"给 UI 的 15 格条显示，
+      // 否则操作员看不到自己下了多少，只看到一片黑。
+      return this.be.transmittedStrength(this.channel);
    }
 
    public void setReceivedStrength(int strength) {

@@ -28,23 +28,34 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
    public static final int DATA_CURRENT_ENTRY = 12;
    public static final int DATA_DISPATCHER_STATE = 14;
    public static final int DATA_SENSOR_SPEED = 15;
-   public static final int DATA_COUNT = 16;
+   /**
+    * 无线通道开关位掩码：位0 = 制动通道开，位1 = 节流阀通道开。
+    *
+    * <p>0..19 已经排满（16=探针OK / 17=探针反向 / 18=绑定的转向架数 / 19=车厢数），
+    * 所以从 20 开始往后扩，缓存数组一并从 20 扩到 {@link #DATA_COUNT}。
+    */
+   public static final int DATA_FLAGS = 20;
+   /** 设置项起始槽：第 i 项在 {@code DATA_SETTING_BASE + i}，顺序由 {@link DispatcherSettings#ENTRIES} 决定。 */
+   public static final int DATA_SETTING_BASE = 21;
+   /** 数据槽总数。扩大后新增的 25..31 先空着，留给阶段 2/4 的设置项。 */
+   public static final int DATA_COUNT = 32;
    private final Container container;
    private final TrainDispatcherBlockEntity blockEntity;
-   private final int[] cached = new int[20];
+   private final int[] cached = new int[DATA_COUNT];
    private final ContainerData data = new ContainerData() {
       public int get(int index) {
-         return index >= 0 && index < 20 ? TrainDispatcherMenu.this.cached[index] : 0;
+         return index >= 0 && index < TrainDispatcherMenu.this.cached.length
+            ? TrainDispatcherMenu.this.cached[index] : 0;
       }
 
       public void set(int index, int value) {
-         if (index >= 0 && index < 20) {
+         if (index >= 0 && index < TrainDispatcherMenu.this.cached.length) {
             TrainDispatcherMenu.this.cached[index] = value;
          }
       }
 
       public int getCount() {
-         return 20;
+         return TrainDispatcherMenu.this.cached.length;
       }
    };
 
@@ -122,6 +133,20 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
       this.cached[19] = this.blockEntity.rosterCars();
       // 距站三态（1.2.0）：0=正常 / 1=寻路失败 / 2=等待信号开放
       this.cached[DATA_DISTANCE_STATE] = this.blockEntity.uiDistanceState();
+      // 无线通道开关（位0=制动，位1=节流阀）
+      int flags = 0;
+      if (this.blockEntity.wirelessEnabled(SignalChannel.BRAKE)) {
+         flags |= 1;
+      }
+      if (this.blockEntity.wirelessEnabled(SignalChannel.THROTTLE)) {
+         flags |= 2;
+      }
+      this.cached[DATA_FLAGS] = flags;
+      // 设置项：登记表驱动，加一项就自动多一格，UI 不用改
+      DispatcherSettings ds = this.blockEntity.settings();
+      for (int i = 0; i < ds.count() && DATA_SETTING_BASE + i < this.cached.length; i++) {
+         this.cached[DATA_SETTING_BASE + i] = ds.get(i);
+      }
       }
    }
 
@@ -156,6 +181,26 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
                this.refresh();
                return true;
             default:
+               if (id == DispatcherSettings.BUTTON_TOGGLE_BASE) {
+                  this.blockEntity.toggleWireless(SignalChannel.BRAKE);
+                  this.refresh();
+                  return true;
+               }
+               if (id == DispatcherSettings.BUTTON_TOGGLE_BASE + 1) {
+                  this.blockEntity.toggleWireless(SignalChannel.THROTTLE);
+                  this.refresh();
+                  return true;
+               }
+               if (id >= DispatcherSettings.BUTTON_SETTING_BASE) {
+                  int off = id - DispatcherSettings.BUTTON_SETTING_BASE;
+                  int idx = off / 2;
+                  int dir = (off % 2 == 1) ? 1 : -1;
+                  if (idx >= 0 && idx < this.blockEntity.settings().count()) {
+                     this.blockEntity.adjustSetting(idx, dir);
+                     this.refresh();
+                     return true;
+                  }
+               }
                return false;
          }
       }
@@ -167,6 +212,27 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
 
    public int brakeOutput() {
       return this.data.get(0);
+   }
+
+   /** 某一行的无线输出开关是否打开（0 = 制动，1 = 节流阀）。 */
+   public boolean wirelessOn(int row) {
+      int bit = row == 0 ? 1 : 2;
+      return (this.data.get(DATA_FLAGS) & bit) != 0;
+   }
+
+   /** 第 idx 项设置的当前值（顺序见 {@link DispatcherSettings#ENTRIES}）。 */
+   public int settingValue(int idx) {
+      return this.data.get(DATA_SETTING_BASE + idx);
+   }
+
+   /** 设置项数量（阶段 2 的画栏要用）。 */
+   public int settingCount() {
+      return DispatcherSettings.ENTRIES.length;
+   }
+
+   /** 设置项名字，给 UI 用（客户端读静态表，不走网络）。 */
+   public String settingLabel(int idx) {
+      return idx >= 0 && idx < DispatcherSettings.ENTRIES.length ? DispatcherSettings.ENTRIES[idx].label : "?";
    }
 
    public boolean bound() {

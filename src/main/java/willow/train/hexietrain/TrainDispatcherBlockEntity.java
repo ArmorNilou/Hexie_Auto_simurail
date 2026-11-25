@@ -79,6 +79,17 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
    private final ItemStack[] frequencies = new ItemStack[FREQ_SLOTS];
    private final WirelessChannel[] wireless = new WirelessChannel[SignalChannel.VALUES.length];
    private final int[] outputs = new int[SignalChannel.VALUES.length];
+
+   /**
+    * 两个无线输出通道的开关。默认全开（保持 1.4.0 行为）。
+    *
+    * <p>关掉只影响<b>往外发</b>（{@link #transmittedStrength}），不影响 {@link #output}
+    * —— UI 的 15 格条显示的是"需求值"，这个区分是有意的。
+    */
+   private final boolean[] wirelessEnabled = new boolean[]{true, true};
+
+   /** 右上角设置栏的数据（上下限等）。落盘走 {@link DispatcherStore}。 */
+   private final DispatcherSettings settings = new DispatcherSettings();
    private final List<String> stopNames = new ArrayList<>();
    private String nextTargetName = "";
    private double lastDistance = 0.0;
@@ -3711,6 +3722,60 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
       return this.outputs[channel.index()];
    }
 
+   /** 这个通道的开关状态。 */
+   public boolean wirelessEnabled(SignalChannel channel) {
+      return channel != null && this.wirelessEnabled[channel.index()];
+   }
+
+   /**
+    * <b>真正发到红石网络上的强度</b>：开关关掉就是 0。
+    *
+    * <p>{@link WirelessChannel#getTransmittedStrength()} 调这里。
+    * 不动 {@link #output} 是为了让 UI 还能显示需求值。
+    */
+   public int transmittedStrength(SignalChannel channel) {
+      return this.wirelessEnabled(channel) ? this.output(channel) : 0;
+   }
+
+   /**
+    * 翻转某个通道的无线输出开关。
+    *
+    * <p>必须 {@code pushWireless}：Create 的 RedstoneLinkNetworkHandler 没有 tick，
+    * 只有 updateNetworkOf 被调时才会重读 {@code getTransmittedStrength} 并广播。
+    * 不推这一下，外面会继续读到关掉前的旧值。
+    */
+   public void toggleWireless(SignalChannel channel) {
+      if (channel == null) {
+         return;
+      }
+      int i = channel.index();
+      this.wirelessEnabled[i] = !this.wirelessEnabled[i];
+      this.pushWireless(channel);
+      this.saveOwnRecord();
+      this.sendData();
+      HexieTrain.LOGGER.info("[wireless] {} 通道 {}（需求={} 实发={}）",
+         channel.name(), this.wirelessEnabled[i] ? "开" : "关",
+         this.output(channel), this.transmittedStrength(channel));
+   }
+
+   /** 设置表（右上角设置栏读写它）。 */
+   public DispatcherSettings settings() {
+      return this.settings;
+   }
+
+   /**
+    * 步进一个设置项并立刻落盘。
+    *
+    * <p>设置项只影响输出映射（阶段 3 接上），不影响保存时机，所以这里直接存。
+    */
+   public void adjustSetting(int index, int delta) {
+      if (this.settings.adjust(index, delta)) {
+         this.saveOwnRecord();
+         this.sendData();
+         HexieTrain.LOGGER.info("[settings] {} → {}", this.settings.describe());
+      }
+   }
+
    public ItemStack frequency(int slot) {
       return slot >= 0 && slot < FREQ_SLOTS ? this.frequencies[slot] : ItemStack.EMPTY;
    }
@@ -3759,6 +3824,15 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                      this.frequencies[i] = ItemStack.parseOptional(sl.registryAccess(), tag.getCompound("Freq" + i));
                      this.pushFrequency(i, this.frequencies[i]);
                   }
+               }
+               if (tag.contains("Settings")) {
+                  this.settings.load(tag.getCompound("Settings"));
+               }
+               if (tag.contains("WirelessBrake")) {
+                  this.wirelessEnabled[SignalChannel.BRAKE.index()] = tag.getBoolean("WirelessBrake");
+               }
+               if (tag.contains("WirelessThrottle")) {
+                  this.wirelessEnabled[SignalChannel.THROTTLE.index()] = tag.getBoolean("WirelessThrottle");
                }
 
                HexieTrain.LOGGER.info("[store] 已从独立文件恢复 {} → entry={} 频率位={}", new Object[]{this.assemblyId, this.myEntry, this.frequencies.length});
@@ -3809,6 +3883,10 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
                   tag.put("Freq" + i, this.frequencies[i].save(sl.registryAccess()));
                }
             }
+
+            tag.put("Settings", this.settings.save());
+            tag.putBoolean("WirelessBrake", this.wirelessEnabled[SignalChannel.BRAKE.index()]);
+            tag.putBoolean("WirelessThrottle", this.wirelessEnabled[SignalChannel.THROTTLE.index()]);
 
             DispatcherStore.save(this.assemblyId, tag);
             return;

@@ -57,6 +57,15 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
    private static final int CELL_W = 4;
    private static final int CELL_GAP = 1;
    private static final int CELL_COUNT = 15;
+   /**
+    * 无线输出开关：画在 15 格输出条右端。
+    *
+    * <p>15 格条从 {@code CELLS_X=86} 起，每格 5px（4 格 + 1 间隔），最后一格右边缘在 160，
+    * 面板宽 176，所以 162..172 这 10px 是空的，正好放开关。
+    */
+   private static final int TOGGLE_X = 162;
+   private static final int TOGGLE_W = 10;
+   private static final int TOGGLE_H = 8;
    private int browseIndex = -1;
 
    public TrainDispatcherScreen(TrainDispatcherMenu menu, Inventory playerInventory, Component title) {
@@ -169,6 +178,13 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
          }
       }
 
+      // ---- 无线输出开关（画在 15 格条右端）：关掉 = 这个通道不发红石，但需求值照显示 ----
+      int mx = mouseX - this.leftPos;
+      int my = mouseY - this.topPos;
+      for (int row = 0; row < ROW_Y.length; row++) {
+         this.drawWirelessToggle(g, row, mx, my);
+      }
+
       // ---- 调度状态 / 距站 ----
       if (menu.bound() || menu.stopCount() > 0) {
          String[] stateNames = new String[]{"待命", "行驶中", "滑车", "急刹"};
@@ -264,6 +280,29 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
          CLEAR_Y + 2, color, false);
    }
 
+   /**
+    * 画一个通道的无线输出开关：开=绿、关=暗，悬停时提亮。
+    *
+    * <p>注意：{@code renderLabels} 拿到的 mouseX/mouseY 是<b>屏幕坐标</b>
+    * （本类没有重写 render，原版是直接透传的），所以这里必须先减 leftPos/topPos
+    * 才能和面板坐标比。{@code mouseClicked} 里本来就是减过的。
+    */
+   private void drawWirelessToggle(GuiGraphics g, int row, int mouseX, int mouseY) {
+      boolean on = this.menu.wirelessOn(row);
+      int x = TOGGLE_X;
+      int y = ROW_Y[row] + 4;
+      boolean hover = isIn(mouseX, mouseY, x, y, TOGGLE_W, TOGGLE_H);
+      int frame = hover ? -14721089 : C_CELL_FRAME;
+      int fill;
+      if (on) {
+         fill = hover ? -10569647 : -11974327;
+      } else {
+         fill = hover ? C_SLOT_INNER : C_CELL_OFF;
+      }
+      g.fill(x, y, x + TOGGLE_W, y + TOGGLE_H, frame);
+      g.fill(x + 1, y + 1, x + TOGGLE_W - 1, y + TOGGLE_H - 1, fill);
+   }
+
    private static int litColor(int index) {
       int gray = 90 * (14 - index) / 14;
       return -65536 | gray << 8 | gray;
@@ -302,6 +341,14 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
          if (this.menu.bogeyCount() > 0 && isIn(x, y, CLEAR_X, CLEAR_Y, CLEAR_W, CLEAR_H)) {
             this.minecraft.gameMode.handleInventoryButtonClick(this.menu.containerId, 4);
             return true;
+         }
+         // 无线输出开关（按钮 id 10 + 通道序号）
+         for (int row = 0; row < ROW_Y.length; row++) {
+            if (isIn(x, y, TOGGLE_X, ROW_Y[row] + 4, TOGGLE_W, TOGGLE_H)) {
+               this.minecraft.gameMode.handleInventoryButtonClick(this.menu.containerId,
+                  willow.train.hexietrain.DispatcherSettings.BUTTON_TOGGLE_BASE + row);
+               return true;
+            }
          }
          // 手动 / 自动 切换（按钮 id 3）
          if (isIn(x, y, 102, 1, 70, 15)) {
