@@ -762,8 +762,17 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
       return this.extClockwise;
    }
 
+   /**
+    * 未绑定 = 没有时刻表 + 不在手动 + 侧面没有任何红石输入。
+    *
+    * <p>这里读的是<b>缓存的</b> {@code extCounterClockwise/extClockwise}（每拍由
+    * {@code updateExternalInput} 写入），不是当场的 {@code faceSignal()}：
+    * 后者在邻居区块未就绪时会返回 0（见 {@code faceSignal} 的注释），
+    * 一抖就把状态打回"未绑定"，界面跟着闪。
+    */
    public boolean isUnbound() {
-      return this.scheduleSlot.isEmpty() && !this.manualMode && this.counterClockwiseSignal() == 0 && this.clockwiseSignal() == 0;
+      return this.scheduleSlot.isEmpty() && !this.manualMode
+         && this.extCounterClockwise == 0 && this.extClockwise == 0;
    }
 
    public int counterClockwiseSignal() {
@@ -3098,6 +3107,22 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
          int cw = this.clockwiseSignal();
          this.updateExternalInput(ccw, cw);
          int mag = Math.max(ccw, cw);
+
+         // ===== 红石有输入 ⇒ 进入玩家操控模式 =====
+         // 这段原来只写在 tickAutomated() 里。而入口是：
+         //     autoAllowed = !manualMode && !isUnbound() && !scheduleSlot.isEmpty();
+         //     if (autoAllowed && boundTrain != null) tickAutomated(); else tickManualGearbox();
+         // ⇒ 没有时刻表时永远走本方法，manualMode 从来不会置位，
+         //    isUnbound() 于是恒为 true，界面一直显示"未绑定"，红石也抢不到控制权。
+         // 手动/无时刻表这条路上必须同样能进手动。
+         if (mag > 0 && !this.manualMode) {
+            this.manualMode = true;
+            this.setChanged();
+            this.sendData();
+            HexieTrain.LOGGER.info("[manual] 侧面红石输入 {} ⇒ 进入玩家操控模式 target={} entry={}",
+               mag, this.myEntry, this.scheduleSlot.isEmpty(), this.boundTrain != null);
+         }
+
          if (mag > 0) {
             this.SetOutputBrake(0);
             this.setOutput(SignalChannel.THROTTLE, mag);
