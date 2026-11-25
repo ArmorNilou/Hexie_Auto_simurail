@@ -183,8 +183,6 @@ public class DispatcherSettingsScreen extends Screen {
          g.drawString(this.font, v, this.left + PANEL_W - 78 - this.font.width(v), ry + 6, C_VALUE, false);
       }
 
-      g.drawString(this.font, "改的是输出上下限（0..15）；阶段 3 才会接到实际输出上",
-         this.left + 8, this.top + this.panelH - FOOT_H - 2, C_TEXT_DIM, false);
 
       // 控件最后画，保证盖在上面。
       // 不走 super.render：它会再铺一层背景，把我上面的面板和文字压成半透明；

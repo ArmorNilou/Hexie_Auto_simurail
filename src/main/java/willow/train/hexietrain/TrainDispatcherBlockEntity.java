@@ -3734,7 +3734,43 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     * 不动 {@link #output} 是为了让 UI 还能显示需求值。
     */
    public int transmittedStrength(SignalChannel channel) {
-      return this.wirelessEnabled(channel) ? this.output(channel) : 0;
+      return this.wirelessEnabled(channel) ? this.outputMapped(channel) : 0;
+   }
+
+   /**
+    * <b>实际输出值</b>：把需求 {@code 0..15} 线性映射到该通道设置的 {@code [下限, 上限]}。
+    *
+    * <p>为什么不直接改 {@link #output}：{@code output()} 是<b>需求值</b>，还被状态机读着
+    * （比如 "brake 通道 > 0 说明正在制动"）。如果让 output() 返回映射后的值，
+    * 当下限被设成非 0 时它就会永远 > 0，把状态机带偏。所以这里只改"出去的那个数"。
+    *
+    * <p>上下限反了（min &gt; max）就自己换过来，宁可按区间算也不输出越界值。
+    * 默认 0..15 时直接原样返回，等于没有这一步。
+    */
+   public int outputMapped(SignalChannel channel) {
+      if (channel == null) {
+         return 0;
+      }
+      int v = this.outputs[channel.index()];
+      int lo;
+      int hi;
+      if (channel == SignalChannel.BRAKE) {
+         lo = this.settings.get(DispatcherSettings.BRAKE_MIN);
+         hi = this.settings.get(DispatcherSettings.BRAKE_MAX);
+      } else {
+         lo = this.settings.get(DispatcherSettings.THROTTLE_MIN);
+         hi = this.settings.get(DispatcherSettings.THROTTLE_MAX);
+      }
+      if (lo > hi) {
+         int tmp = lo;
+         lo = hi;
+         hi = tmp;
+      }
+      if (lo <= 0 && hi >= 15) {
+         return v;
+      }
+      int mapped = Math.round(lo + (hi - lo) * (v / 15.0F));
+      return Math.max(0, Math.min(15, mapped));
    }
 
    /**
@@ -3770,9 +3806,14 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
     */
    public void adjustSetting(int index, int delta) {
       if (this.settings.adjust(index, delta)) {
+         // 上下限变了 ⇒ 实际输出跟着变 ⇒ 必须让红石网络重读，否则外面还拿旧强度。
+         // （Create 的 RedstoneLinkNetworkHandler 没有 tick，只能靠 updateNetworkOf 推。）
+         this.pushWireless(SignalChannel.BRAKE);
+         this.pushWireless(SignalChannel.THROTTLE);
          this.saveOwnRecord();
          this.sendData();
-         HexieTrain.LOGGER.info("[settings] {} → {}", this.settings.describe());
+         HexieTrain.LOGGER.info("[settings] {} → {} ｜ 实发 制动={} 节流={}", this.settings.describe(),
+            this.outputMapped(SignalChannel.BRAKE), this.outputMapped(SignalChannel.THROTTLE));
       }
    }
 

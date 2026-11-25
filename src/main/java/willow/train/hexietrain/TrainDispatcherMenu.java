@@ -113,12 +113,14 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
 
    public void refresh() {
       if (this.blockEntity != null) {
-         this.cached[0] = this.blockEntity.output(SignalChannel.BRAKE);
+         // 显示实际输出（已按上下限映射），不是需求值 —— 否则设了上限 10 却看到格子亮到 15，
+         // 会以为上限没生效。
+         this.cached[0] = this.blockEntity.outputMapped(SignalChannel.BRAKE);
          this.cached[4] = this.blockEntity.boundTrain() != null ? 1 : 0;
          this.cached[7] = (int)Math.min(2.147483647E9, this.blockEntity.distanceToTarget());
          double uiDist = this.blockEntity.cacheDistanceForUi();
          this.cached[8] = Double.isFinite(uiDist) ? (int)Math.round(uiDist * 10.0) : -1;
-         this.cached[9] = this.blockEntity.output(SignalChannel.THROTTLE);
+         this.cached[9] = this.blockEntity.outputMapped(SignalChannel.THROTTLE);
          this.cached[10] = this.blockEntity.arrivedFlag() ? 1 : 0;
          this.blockEntity.refreshStopNames();
           this.cached[5] = this.blockEntity.stopNames().size();
