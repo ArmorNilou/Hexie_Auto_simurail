@@ -84,8 +84,12 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
    private int browseIndex = -1;
 
    // ===== 右上角设置栏（阶段 2）=====
-   /** 齿轮/菜单按钮：塞在标题栏最右端（标题栏 y=1..16）。 */
-   private static final int GEAR_X = 159;
+   /**
+    * 齿轮/菜单按钮：<b>画在面板外面</b>（面板宽 176 到这里就结束了），
+    * 贴在右上角外侧 180..194。用户要求"按钮应该在 UI 界面的外边"，所以不再压在标题栏里。
+    * 设置界面里的同一个按钮也画在它自己面板的外侧，位置规格一致，按一次回去。
+    */
+   private static final int GEAR_X = 180;
    private static final int GEAR_Y = 2;
    private static final int GEAR_W = 15;
    private static final int GEAR_H = 13;
@@ -166,9 +170,8 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
       }
 
       int badgeColor = menu.manualMode() ? -4955350 : (!menu.bound() ? C_PANEL_DARK : -13730510);
-      boolean badgeHover = isIn(mouseX - this.leftPos, mouseY - this.topPos, 96, 1, 61, 15);
-      // 右边界从 168 收到 157：右上角要让给设置栏的齿轮按钮
-      g.drawString(this.font, badge, 157 - this.font.width(badge), 4, badgeHover ? -14721089 : badgeColor, false);
+      boolean badgeHover = isIn(mouseX - this.leftPos, mouseY - this.topPos, 102, 1, 70, 15);
+      g.drawString(this.font, badge, 168 - this.font.width(badge), 4, badgeHover ? -14721089 : badgeColor, false);
 
       this.drawDestination(g);
 

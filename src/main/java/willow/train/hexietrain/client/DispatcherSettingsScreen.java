@@ -2,6 +2,8 @@ package willow.train.hexietrain.client;
 
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.Renderable;
+import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import willow.train.hexietrain.DispatcherSettings;
@@ -39,10 +41,10 @@ public class DispatcherSettingsScreen extends Screen {
    private static final int C_BORDER = 0xFF3E3E3E;
    private static final int C_PANEL = 0xFFC6C6C6;
    private static final int C_HEADER = 0xFFB4B4B4;
-   private static final int C_ROW = 0xFFD8D8D8;
-   private static final int C_TEXT = 0xFF3E3E3E;
-   private static final int C_TEXT_DIM = 0xFF6E6E6E;
-   private static final int C_VALUE = 0xFF1B5E20;
+   private static final int C_ROW = 0xFFDCDCDC;
+   private static final int C_TEXT = 0xFF1A1A1A;
+   private static final int C_TEXT_DIM = 0xFF5A5A5A;
+   private static final int C_VALUE = 0xFF14521A;
 
    /** 齿轮按钮（和主界面同一个位置规格，按它返回）。 */
    private static final int GEAR_W = 15;
@@ -121,14 +123,36 @@ public class DispatcherSettingsScreen extends Screen {
       return false;
    }
 
+   /** 齿轮画在<b>面板外侧</b>右上角，和调度器主界面同一个规格。 */
    private int gearX() {
-      return this.left + PANEL_W - GEAR_W - 4;
+      return this.left + PANEL_W + 4;
    }
 
    private int gearY() {
-      return this.top + 6;
+      return this.top + 2;
    }
 
+   /** 齿轮的点击判定（它不在面板里，所以不能靠 addRenderableWidget 的按钮来做）。 */
+   public boolean mouseClicked(double mouseX, double mouseY, int button) {
+      if (button == 0) {
+         int gx = this.gearX();
+         int gy = this.gearY();
+         if (mouseX >= gx && mouseX < gx + GEAR_W && mouseY >= gy && mouseY < gy + GEAR_H) {
+            this.returnToDispatcher();
+            return true;
+         }
+      }
+      return super.mouseClicked(mouseX, mouseY, button);
+   }
+
+   /**
+    * <b>不调 {@code super.render()}</b>。
+    *
+    * <p>1.21 里 {@code Screen.render} 自己会再铺一次背景（半透明暗色 + 模糊），
+    * 而我又在开头显式铺了一次 —— 结果我画完面板和文字之后，super.render 又盖了一层，
+    * 面板和字全被压成发白的半透明，只有后画的 Button 是清楚的（实机截图就是这样）。
+    * 所以这里：铺一次背景 → 画面板与文字 → 手动遍历 renderables 画控件，只铺一次。
+    */
    public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
       this.renderBackground(g, mouseX, mouseY, partialTick);
 
@@ -138,7 +162,7 @@ public class DispatcherSettingsScreen extends Screen {
       g.fill(this.left + 1, this.top + 1, this.left + PANEL_W - 1, this.top + 22, C_HEADER);
       g.drawString(this.font, "调度器设置", this.left + 6, this.top + 7, C_TEXT, false);
 
-      // 齿轮（≡）：再按一次回去
+      // 齿轮（≡）：画在面板外侧右上角，再按一次回去
       int gx = this.gearX();
       int gy = this.gearY();
       boolean gearHover = mouseX >= gx && mouseX < gx + GEAR_W && mouseY >= gy && mouseY < gy + GEAR_H;
@@ -162,7 +186,13 @@ public class DispatcherSettingsScreen extends Screen {
       g.drawString(this.font, "改的是输出上下限（0..15）；阶段 3 才会接到实际输出上",
          this.left + 8, this.top + this.panelH - FOOT_H - 2, C_TEXT_DIM, false);
 
-      // 按钮最后画，保证盖在上面
-      super.render(g, mouseX, mouseY, partialTick);
+      // 控件最后画，保证盖在上面。
+      // 不走 super.render：它会再铺一层背景，把我上面的面板和文字压成半透明；
+      // 这里只遍历 children 里实现了 Renderable 的（也就是 Button），手动画。
+      for (GuiEventListener el : this.children()) {
+         if (el instanceof Renderable r) {
+            r.render(g, mouseX, mouseY, partialTick);
+         }
+      }
    }
 }
