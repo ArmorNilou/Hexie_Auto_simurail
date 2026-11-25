@@ -218,7 +218,13 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
       }
 
       // ---- 调度状态 / 距站 ----
-      if (menu.bound() || menu.stopCount() > 0) {
+      // 玩家操控中：调度显示「玩家操控中」，距站显示「--」。
+      // 手动模式下没有自动调度在跑，还挂着上一段的「行驶中 / 距站 123.4 m」是误导读表，
+      // 而且那个距站值在松开手之后也不会再更新。
+      if (menu.manualMode()) {
+         g.drawString(this.font, "调度：玩家操控中", 8, 112, -4955350, false);
+         g.drawString(this.font, "距站：--", 8, 124, C_TEXT_DIM, false);
+      } else if (menu.bound() || menu.stopCount() > 0) {
          String[] stateNames = new String[]{"待命", "行驶中", "滑车", "急刹"};
          int[] stateColors = new int[]{C_TEXT_DIM, -13730510, -4684277, -5242848};
          int stIdx = Math.max(0, Math.min(stateNames.length - 1, menu.dispatcherState()));
