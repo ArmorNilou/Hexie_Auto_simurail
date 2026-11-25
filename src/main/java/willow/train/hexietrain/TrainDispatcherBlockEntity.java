@@ -1555,7 +1555,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             if (!this.manualMode && !rosterNow.positions().isEmpty()
                   && this.settings.get(DispatcherSettings.BOGEY_BRAKE) == 1) {
                this.bogeyBraking.tick((ServerLevel)this.level, this.worldPosition, rosterNow,
-                  this.outputMapped(SignalChannel.BRAKE), this.bogeyBrakeRampTicks());
+                  this.outputMapped(SignalChannel.BRAKE));
             } else {
                this.bogeyBraking.releaseAll((ServerLevel)this.level, this.worldPosition, rosterNow);
             }
@@ -3703,45 +3703,6 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
    }
 
    /** 解绑态：所有输出归零，转向遥控条目清掉。不抱闸、不牵引 —— 完全撒手。 */
-   /**
-    * <b>制动力 0→15 用多少拍</b>，按 Create 的加速度设置换算。
-    *
-    * <p>Create 的 {@code Train.acceleration()} 是"每拍速度增量"（实现是 {@code 配置值 / 400}），
-    * 而 {@code maxSpeed()} 是速度上限。所以"满速一脚刹到 0"大约要
-    * {@code maxSpeed() / acceleration()} 拍 —— 我们就用这个当制动力爬满的时间，
-    * 让物理车的制动上升节奏和 Create 那边的速度下降节奏一致。
-    *
-    * <p>取不到车（还没绑定 / 图里没有）时用 60 拍（3 秒）并在日志里说一次，不静默糊一个值。
-    */
-   private int bogeyBrakeRampTicks() {
-      try {
-         Train st = this.boundTrain == null ? null : (Train)Create.RAILWAYS.trains.get(this.boundTrain);
-         if (st == null) {
-            return this.rampFallback();
-         }
-         float accel = st.acceleration();
-         float maxSpd = st.maxSpeed();
-         if (!(accel > 1.0E-5F) || !(maxSpd > 1.0E-4F)) {
-            return this.rampFallback();
-         }
-         double ticks = maxSpd / accel;
-         this.rampFallbackLogged = false;
-         return (int)Math.max(20, Math.min(120, ticks));
-      } catch (Throwable t) {
-         return this.rampFallback();
-      }
-   }
-
-   private boolean rampFallbackLogged = false;
-
-   private int rampFallback() {
-      if (!this.rampFallbackLogged) {
-         this.rampFallbackLogged = true;
-         HexieTrain.LOGGER.info("[bbrake] 取不到 Create 的加速度 ⇒ 制动力爬升按 60 拍（3 秒）算");
-      }
-      return 60;
-   }
-
    private void releaseEverything() {
       try {
          this.setOutput(SignalChannel.THROTTLE, 0);
