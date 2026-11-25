@@ -181,6 +181,16 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
                this.refresh();
                return true;
             default:
+               // 权限：只有调度器主人能改开关和设置。
+               // 原来只有 case 4（清除绑定）做了检查，新加的 10/11 和 200+ 漏了 ——
+               // 任何人打开界面都能把无线输出关掉、把上下限改成 0。
+               if (id == DispatcherSettings.BUTTON_TOGGLE_BASE
+                     || id == DispatcherSettings.BUTTON_TOGGLE_BASE + 1
+                     || id >= DispatcherSettings.BUTTON_SETTING_BASE) {
+                  if (this.denied(player, id >= DispatcherSettings.BUTTON_SETTING_BASE ? "改设置" : "切换无线输出")) {
+                     return true;
+                  }
+               }
                if (id == DispatcherSettings.BUTTON_TOGGLE_BASE) {
                   this.blockEntity.toggleWireless(SignalChannel.BRAKE);
                   this.refresh();
@@ -204,6 +214,24 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
                return false;
          }
       }
+   }
+
+   /**
+    * 统一的权限闸：不是主人就拦下来（返回 true 表示"已经处理掉了，调用方直接 return"）。
+    *
+    * <p>和 case 4 里原来那段逻辑完全一致：关掉对方界面 + 红字提示。
+    * 抽出来是因为新增的按钮多了，复制四遍容易漏。
+    */
+   private boolean denied(Player player, String what) {
+      if (this.blockEntity == null || !this.blockEntity.hasOwner() || this.blockEntity.isOwner(player)) {
+         return false;
+      }
+      if (player instanceof net.minecraft.server.level.ServerPlayer sp) {
+         sp.closeContainer();
+      }
+      player.displayClientMessage(net.minecraft.network.chat.Component
+         .literal(this.blockEntity.denyText(what)).withStyle(net.minecraft.ChatFormatting.RED), false);
+      return true;
    }
 
    public TrainDispatcherBlockEntity blockEntity() {

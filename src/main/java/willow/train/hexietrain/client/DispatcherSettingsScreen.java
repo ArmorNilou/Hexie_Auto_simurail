@@ -79,15 +79,36 @@ public class DispatcherSettingsScreen extends Screen {
          .bounds(this.left + (PANEL_W - 96) / 2, this.top + this.panelH - FOOT_H + 6, 96, 18).build());
    }
 
+   /**
+    * 容器还挂着吗。
+    *
+    * <p>换 Screen 不会关容器（关容器只在 {@code AbstractContainerScreen.onClose()} 里发生），
+    * 但为防"服务器把容器关了 / 世界退出了"这种边界，发包和返回父屏之前都要确认一次：
+    * 一旦 {@code player.containerMenu} 已经不是这个 menu，{@code containerId} 就是过期号，
+    * 发出去服务器也只会丢掉 —— 不如干脆不发。
+    */
+   private boolean attached() {
+      return this.minecraft != null
+         && this.minecraft.player != null
+         && this.minecraft.player.containerMenu == this.menu;
+   }
+
    private void send(int id) {
-      if (this.minecraft != null && this.minecraft.gameMode != null) {
-         this.minecraft.gameMode.handleInventoryButtonClick(this.menu.containerId, id);
+      if (!this.attached() || this.minecraft.gameMode == null) {
+         return;
       }
+      this.minecraft.gameMode.handleInventoryButtonClick(this.menu.containerId, id);
    }
 
    private void returnToDispatcher() {
-      if (this.minecraft != null) {
+      if (this.minecraft == null) {
+         return;
+      }
+      if (this.attached()) {
          this.minecraft.setScreen(this.parent);
+      } else {
+         // 容器没了，回父屏也没意义（那是容器屏），直接回游戏
+         this.minecraft.setScreen(null);
       }
    }
 

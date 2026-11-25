@@ -182,7 +182,9 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
       if (bogeys <= 0) {
          g.drawString(this.font, "潜行右键调度器选中，再右键转向架绑定", 8, INFO_Y2, C_TEXT_DIM, false);
       }
-      this.drawClearButton(g, bogeys, mouseX, mouseY);
+      // 注意：renderLabels 里的 mouseX/mouseY 是屏幕坐标，必须先减掉 leftPos/topPos，
+      // 否则 isIn 拿屏幕坐标比面板坐标，hover 永远不成立（原来这个按钮的悬停就一直是坏的）。
+      this.drawClearButton(g, bogeys, mouseX - this.leftPos, mouseY - this.topPos);
 
       // ---- 右上角设置栏 ----
       this.drawGear(g, mouseX - this.leftPos, mouseY - this.topPos);
@@ -389,7 +391,9 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
          }
          // 齿轮：打开独立的设置界面（客户端只换 Screen，容器与数据槽保持不动）
          if (isIn(x, y, GEAR_X, GEAR_Y, GEAR_W, GEAR_H)) {
-            this.minecraft.setScreen(new DispatcherSettingsScreen(this, this.menu));
+            if (this.minecraft.player != null && this.minecraft.player.containerMenu == this.menu) {
+               this.minecraft.setScreen(new DispatcherSettingsScreen(this, this.menu));
+            }
             return true;
          }
          // 无线输出开关（按钮 id 10 + 通道序号）
