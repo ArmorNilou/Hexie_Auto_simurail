@@ -39,6 +39,8 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
    public static final int DATA_SETTING_BASE = 21;
    /** 数据槽总数。扩大后新增的 25..31 先空着，留给阶段 2/4 的设置项。 */
    public static final int DATA_COUNT = 32;
+   /** 数据槽 14 的第 4 个取值：玩家操控中（0=待命 / 1=行驶中 / 2=滑车 / 3=急刹）。 */
+   public static final int STATE_MANUAL = 4;
    private final Container container;
    private final TrainDispatcherBlockEntity blockEntity;
    private final int[] cached = new int[DATA_COUNT];
@@ -127,7 +129,8 @@ public class TrainDispatcherMenu extends AbstractContainerMenu {
          this.cached[11] = this.blockEntity.manualMode() ? 1 : 0;
          this.cached[3] = this.blockEntity.isUnbound() ? 1 : 0;
          this.cached[12] = this.blockEntity.currentEntry();
-         this.cached[14] = this.blockEntity.dispatcherState().ordinal();
+         // 玩家操控中要作为调度状态本身出现（第 4 项），而不是在界面上另起特判。
+         this.cached[14] = this.blockEntity.manualMode() ? STATE_MANUAL : this.blockEntity.dispatcherState().ordinal();
          this.cached[15] = this.blockEntity.measuredSpeedCenti();
       this.cached[16] = this.blockEntity.probeOk() ? 1 : 0;
       this.cached[17] = this.blockEntity.probeBackwards() ? 1 : 0;

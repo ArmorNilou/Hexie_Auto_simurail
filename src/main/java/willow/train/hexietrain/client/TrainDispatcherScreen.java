@@ -218,18 +218,18 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
       }
 
       // ---- 调度状态 / 距站 ----
-      // 玩家操控中：调度显示「玩家操控中」，距站显示「--」。
-      // 手动模式下没有自动调度在跑，还挂着上一段的「行驶中 / 距站 123.4 m」是误导读表，
-      // 而且那个距站值在松开手之后也不会再更新。
-      if (menu.manualMode()) {
-         g.drawString(this.font, "调度：玩家操控中", 8, 112, -4955350, false);
-         g.drawString(this.font, "距站：--", 8, 124, C_TEXT_DIM, false);
-      } else if (menu.bound() || menu.stopCount() > 0) {
-         String[] stateNames = new String[]{"待命", "行驶中", "滑车", "急刹"};
-         int[] stateColors = new int[]{C_TEXT_DIM, -13730510, -4684277, -5242848};
+      // 「玩家操控中」是状态表里的第 4 项（TrainDispatcherMenu.STATE_MANUAL），
+      // 不是这里另加的特判 —— 这样调度行和其它状态走同一条渲染路径。
+      // 手动模式只额外把「距站」压成 --：那个值是上一段自动留下的，不会再更新。
+      if (menu.bound() || menu.stopCount() > 0 || menu.manualMode()) {
+         String[] stateNames = new String[]{"待命", "行驶中", "滑车", "急刹", "玩家操控中"};
+         int[] stateColors = new int[]{C_TEXT_DIM, -13730510, -4684277, -5242848, -4955350};
          int stIdx = Math.max(0, Math.min(stateNames.length - 1, menu.dispatcherState()));
          g.drawString(this.font, "调度：" + stateNames[stIdx], 8, 112, stateColors[stIdx], false);
-         if (menu.arrived()) {
+         if (menu.manualMode()) {
+            // 手动模式没有自动调度在跑，距站那个值是上一段自动留下的，显示出来只会误导。
+            g.drawString(this.font, "距站：--", 8, 124, C_TEXT_DIM, false);
+         } else if (menu.arrived()) {
             g.drawString(this.font, "距站：到站", 8, 124, -12599489, false);
          } else {
             // 1.2.0：距站三态。以前"寻路失败"和"等待信号开放"都显示成 `--`，
