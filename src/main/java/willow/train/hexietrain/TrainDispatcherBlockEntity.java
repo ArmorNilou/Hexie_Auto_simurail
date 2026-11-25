@@ -1475,7 +1475,25 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
          // 层 0：解绑（没有时刻表）⇒ 全部失效
          // 解绑不是说"马上停车"，而是"这个调度器彻底退出"：油门、制动、转向遥控
          // 全部置 0，一个信号都不再发。车还在跑是物理惯性，与我们无关。
-         if (this.scheduleSlot.isEmpty()) {
+         // ===== 红石接管必须在"没有时刻表"那条判定之前 =====
+         // 原来层 0 是 `if (scheduleSlot.isEmpty()) { … releaseEverything(); return; }`，
+         // 没有时刻表时这一拍永远在层 0 被吃掉，层 1（手动）根本执行不到：
+         // 红石虽然把 manualMode 设上了，也没人读；输出每拍被 releaseEverything 清零，
+         // 连 DispatcherGearbox 都被 engage(NONE)。
+         // 现象就是"红石推一下能走一小段，然后就不动了"。
+         // 所以先把红石输入读出来、该进手动就进手动，层 0 再判"没时刻表且不在手动"。
+         int preCcw = this.counterClockwiseSignal();
+         int preCw = this.clockwiseSignal();
+         this.updateExternalInput(preCcw, preCw);
+         if ((preCcw > 0 || preCw > 0) && !this.manualMode) {
+            this.manualMode = true;
+            this.setChanged();
+            this.sendData();
+            HexieTrain.LOGGER.info("[manual] 侧面红石输入 {} ⇒ 进入玩家操控模式（无时刻表也接管）",
+               Math.max(preCcw, preCw));
+         }
+
+         if (this.scheduleSlot.isEmpty() && !this.manualMode) {
             if (this.boundTrain != null) {
                this.dissolve();
             }
