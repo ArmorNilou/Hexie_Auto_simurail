@@ -82,7 +82,6 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
    private static final int C_TOGGLE_OFF = 0xFFC0392B;
    private static final int C_TOGGLE_OFF_HOVER = 0xFFE8695A;
    private int browseIndex = -1;
-   private boolean settingsOpen = false;
 
    // ===== 右上角设置栏（阶段 2）=====
    /** 齿轮/菜单按钮：塞在标题栏最右端（标题栏 y=1..16）。 */
@@ -90,20 +89,6 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
    private static final int GEAR_Y = 2;
    private static final int GEAR_W = 15;
    private static final int GEAR_H = 13;
-   /**
-    * 设置栏是<b>向右展开的浮层</b>（面板宽 176 已经排满），坐标都是面板相对坐标。
-    * 浮层画在 renderBg / renderLabels 里（那两个方法拿的是相对坐标系）。
-    */
-   private static final int SET_PANEL_X = 181;
-   private static final int SET_PANEL_Y = 18;
-   private static final int SET_PANEL_W = 110;
-   private static final int SET_HEAD_H = 16;
-   private static final int SET_ROW_H = 14;
-   private static final int SET_BTN_W = 11;
-   private static final int SET_BTN_H = 11;
-   /** 每行里 减少 / 增加 按钮的 x。 */
-   private static final int SET_MINUS_X = 70;
-   private static final int SET_PLUS_X = 88;
 
    public TrainDispatcherScreen(TrainDispatcherMenu menu, Inventory playerInventory, Component title) {
       super(menu, playerInventory, title);
@@ -159,25 +144,6 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
       g.fill(x + 8, y + 134, x + 176 - 8, y + 135, C_PANEL_DARK);
       g.fill(x + 8, y + 135, x + 176 - 8, y + 136, C_PANEL_LIGHT);
 
-      // ---- 设置栏浮层（向右展开）----
-      if (this.settingsOpen) {
-         int px = x + SET_PANEL_X - 1;
-         int py = y + SET_PANEL_Y - 1;
-         int pw = SET_PANEL_W + 2;
-         int ph = this.settingsPanelHeight() + 2;
-         g.fill(px, py, px + pw, py + ph, C_BORDER);
-         g.fill(px + 1, py + 1, px + pw - 1, py + ph - 1, C_PANEL);
-         g.fill(px + 1, py + 1, px + pw - 1, py + SET_HEAD_H - 1, C_HEADER);
-         for (int i = 0; i < this.menu.settingCount(); i++) {
-            int ry = y + this.settingRowY(i);
-            g.fill(x + SET_PANEL_X, ry, x + SET_PANEL_X + SET_PANEL_W, ry + SET_ROW_H - 1, C_PANEL_DARK);
-            // 两个按钮的底
-            g.fill(x + SET_PANEL_X + SET_MINUS_X, ry + 1,
-               x + SET_PANEL_X + SET_MINUS_X + SET_BTN_W, ry + 1 + SET_BTN_H, C_SLOT_INNER);
-            g.fill(x + SET_PANEL_X + SET_PLUS_X, ry + 1,
-               x + SET_PANEL_X + SET_PLUS_X + SET_BTN_W, ry + 1 + SET_BTN_H, C_SLOT_INNER);
-         }
-      }
    }
 
    private void slotWell(GuiGraphics g, int x, int y) {
@@ -220,9 +186,6 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
 
       // ---- 右上角设置栏 ----
       this.drawGear(g, mouseX - this.leftPos, mouseY - this.topPos);
-      if (this.settingsOpen) {
-         this.drawSettingsPanel(g, mouseX - this.leftPos, mouseY - this.topPos);
-      }
 
       // ---- 制动 / 节流阀 ----
       for (int row = 0; row < ROW_Y.length; row++) {
@@ -351,55 +314,21 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
     * （本类没有重写 render，原版是直接透传的），所以这里必须先减 leftPos/topPos
     * 才能和面板坐标比。{@code mouseClicked} 里本来就是减过的。
     */
-   /** 浮层高度：标题 + 每项一行 + 底部留白。 */
-   private int settingsPanelHeight() {
-      return SET_HEAD_H + this.menu.settingCount() * SET_ROW_H + 6;
-   }
-
-   /** 第 i 项那一行的 y（面板相对坐标）。 */
-   private int settingRowY(int i) {
-      return SET_PANEL_Y + SET_HEAD_H + i * SET_ROW_H;
-   }
 
    /**
-    * 齿轮按钮。用三条横线画（≡），不依赖字体里有没有齿轮字形 ——
-    * 原版字体画 U+2699 会变成方块。
+    * 齿轮按钮（三条横线 ≡）。不依赖字体里的齿轮字形 —— 原版字体画 U+2699 会变成方块。
+    * 点它打开 {@link DispatcherSettingsScreen}；在那个界面里同样的按钮负责返回。
     */
    private void drawGear(GuiGraphics g, int mouseX, int mouseY) {
       boolean hover = isIn(mouseX, mouseY, GEAR_X, GEAR_Y, GEAR_W, GEAR_H);
-      int frame = (hover || this.settingsOpen) ? C_TOGGLE_FRAME_HOVER : C_TOGGLE_FRAME;
+      int frame = hover ? C_TOGGLE_FRAME_HOVER : C_TOGGLE_FRAME;
       g.fill(GEAR_X, GEAR_Y, GEAR_X + GEAR_W, GEAR_Y + GEAR_H, frame);
       g.fill(GEAR_X + 1, GEAR_Y + 1, GEAR_X + GEAR_W - 1, GEAR_Y + GEAR_H - 1,
-         this.settingsOpen ? C_HEADER : C_PANEL_LIGHT);
-      int barColor = (hover || this.settingsOpen) ? -8739 : C_TEXT;
+         hover ? C_HEADER : C_PANEL_LIGHT);
+      int barColor = hover ? -8739 : C_TEXT;
       for (int k = 0; k < 3; k++) {
          int by = GEAR_Y + 4 + k * 3;
          g.fill(GEAR_X + 3, by, GEAR_X + GEAR_W - 3, by + 1, barColor);
-      }
-   }
-
-   /** 浮层里的文字与 +/- 字形（底色在 renderBg 里已经画过）。 */
-   private void drawSettingsPanel(GuiGraphics g, int mouseX, int mouseY) {
-      g.drawString(this.font, "调度器设置", SET_PANEL_X + 5, SET_PANEL_Y + 4, C_TEXT, false);
-      int n = this.menu.settingCount();
-      for (int i = 0; i < n; i++) {
-         int ry = this.settingRowY(i);
-         g.drawString(this.font, this.menu.settingLabel(i), SET_PANEL_X + 5, ry + 3, C_TEXT, false);
-         String v = String.valueOf(this.menu.settingValue(i));
-         g.drawString(this.font, v, SET_PANEL_X + 64 - this.font.width(v), ry + 3, -10496, false);
-
-         int mx = SET_PANEL_X + SET_MINUS_X;
-         int px = SET_PANEL_X + SET_PLUS_X;
-         boolean minusHover = isIn(mouseX, mouseY, mx, ry + 1, SET_BTN_W, SET_BTN_H);
-         boolean plusHover = isIn(mouseX, mouseY, px, ry + 1, SET_BTN_W, SET_BTN_H);
-         g.fill(mx + 1, ry + 1, mx + SET_BTN_W, ry + 1 + SET_BTN_H, minusHover ? C_CELL_FRAME : C_SLOT_INNER);
-         g.fill(px + 1, ry + 1, px + SET_BTN_W, ry + 1 + SET_BTN_H, plusHover ? C_CELL_FRAME : C_SLOT_INNER);
-
-         // 减号 / 加号（都用 fill 画，不靠字形）
-         int gc = C_TEXT;
-         g.fill(mx + 3, ry + 6, mx + 8, ry + 7, gc);
-         g.fill(px + 3, ry + 6, px + 8, ry + 7, gc);
-         g.fill(px + 5, ry + 4, px + 6, ry + 9, gc);
       }
    }
 
@@ -458,31 +387,10 @@ public class TrainDispatcherScreen extends AbstractContainerScreen<TrainDispatch
             this.minecraft.gameMode.handleInventoryButtonClick(this.menu.containerId, 4);
             return true;
          }
-         // 齿轮：只切换本地展开状态，不发给服务器
+         // 齿轮：打开独立的设置界面（客户端只换 Screen，容器与数据槽保持不动）
          if (isIn(x, y, GEAR_X, GEAR_Y, GEAR_W, GEAR_H)) {
-            this.settingsOpen = !this.settingsOpen;
+            this.minecraft.setScreen(new DispatcherSettingsScreen(this, this.menu));
             return true;
-         }
-         // 设置栏的 +/-（按钮 id 200 + 项序号*2 + 方向）
-         if (this.settingsOpen) {
-            int n = this.menu.settingCount();
-            for (int i = 0; i < n; i++) {
-               int ry = this.settingRowY(i);
-               if (isIn(x, y, SET_PANEL_X + SET_MINUS_X, ry + 1, SET_BTN_W, SET_BTN_H)) {
-                  this.minecraft.gameMode.handleInventoryButtonClick(this.menu.containerId,
-                     willow.train.hexietrain.DispatcherSettings.BUTTON_SETTING_BASE + i * 2);
-                  return true;
-               }
-               if (isIn(x, y, SET_PANEL_X + SET_PLUS_X, ry + 1, SET_BTN_W, SET_BTN_H)) {
-                  this.minecraft.gameMode.handleInventoryButtonClick(this.menu.containerId,
-                     willow.train.hexietrain.DispatcherSettings.BUTTON_SETTING_BASE + i * 2 + 1);
-                  return true;
-               }
-            }
-            // 点在浮层里但没打中按钮：吃掉这一下，别让它穿到下面的槽位
-            if (isIn(x, y, SET_PANEL_X, SET_PANEL_Y, SET_PANEL_W, this.settingsPanelHeight())) {
-               return true;
-            }
          }
          // 无线输出开关（按钮 id 10 + 通道序号）
          for (int row = 0; row < ROW_Y.length; row++) {
