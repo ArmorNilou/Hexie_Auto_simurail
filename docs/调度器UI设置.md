@@ -9,8 +9,8 @@
 | 0 | 设置项登记表 + 按钮 id 编码 + 数据槽预算 + 本文档 | **已完成** |
 | 1 | 制动 / 节流阀两路的**无线输出开关**（画在 15 格条右端） | **已完成** |
 | 2 | 右上角 ⚙ 设置栏（展开/收起、登记表驱动渲染、±调整） | 待做 |
-| 3 | 上下限真的作用到输出（0..15 重映射到 `[min,max]`） | 待做 |
-| 4 | 转向架制动接入（`setRemoteBrakeOverride`，每 tick 刷新） | 待做 |
+| 3 | 上下限真的作用到输出（0..15 重映射到 `[min,max]`） | **已完成** |
+| 4 | 转向架制动接入（`setRemoteBrakeOverride`，每 tick 刷新） | **已完成** |
 
 ## 2. 传输通道选型（**硬边界，先记住**）
 
@@ -99,3 +99,31 @@
 3. 此时用红石链接收端看该频率：读到 0；15 格条**仍然**显示需求值。
 4. 再点一次 → 恢复，接收端立刻回到原值（靠 `pushWireless`）。
 5. 退出重进世界 → 开关状态保持。
+
+## 8. 阶段 3 实现要点（上下限真的生效）
+
+- **只改"出去的那个数"**：`output()` 仍是**需求值**（0..15），新增 `outputMapped()` 做映射。
+  原因：状态机里有 `output(BRAKE) > 0` 之类的判断，若让 `output()` 返回映射值，
+  下限设成非 0 时它会**恒大于 0**，把状态机带偏。
+- `transmittedStrength()` = 开关开 ? `outputMapped()` : 0。
+- 15 格条也改成显示 `outputMapped()` —— 否则设了上限 10 却看到格子亮到 15，会以为上限没生效。
+- 改上下限时必须 `pushWireless` 两个通道，否则红石网络不会重读。
+- **下限是真兜底**：制动下限 3 ⇒ 即使需求 0，实际也输出 3，车一直带闸。这是字面语义，不是 bug。
+
+## 9. 阶段 4 实现要点（转向架制动）
+
+`BogeyBraking`，三条从 Simurail 源码读出来的硬语义：
+
+1. **条目只活 3 拍**（`currentTime - pair.leftLong() > 2` 就删）⇒ 非 0 值**必须每 tick 重写**。
+2. **发 0 等于删条目**（`remoteBrakeOverrides.remove`）⇒ 松闸发一次 0，不是每拍发小正数。
+3. **接收端会平方**（`getRemoteBrakeStrength() = square(clamp(v/15,0,1))`）
+   ⇒ 想要制动力 b，要发 `15*sqrt(b)`，否则只会拿到平方后的小值。
+
+**硬约束**：`getBrakeStrength()` 是 `Floats.max(本地红石, 遥控, CC, 导航制动)`
+⇒ **远程制动只能让车更刹，不能让车更松**。
+
+**开关**：设置栏里的「转向架制动」（`BogeyBrake`，0/1，默认 1）。
+
+**与转向不冲突**：转向走 `setCurrentPath`，制动走 `setRemoteBrakeOverride`，
+在 Simurail 里是**两张独立的表**（`currentPath` 字段 / `remoteBrakeOverrides` 映射），
+都拿 `worldPosition` 当 anchor，互不覆盖。

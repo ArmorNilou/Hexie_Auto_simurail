@@ -269,6 +269,9 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
    private final BogeyRoster roster = new BogeyRoster();
    /** 逐转向架道岔子系统（见 BogeySteering）。 */
    private final BogeySteering steering = new BogeySteering();
+
+   /** 阶段 4：把制动指令写进物理转向架。 */
+   private final BogeyBraking bogeyBraking = new BogeyBraking();
    /** 上一次 [nav] 覆盖状态的位组合，只用来限流日志。-1 = 还没打过 */
    private int lastCoverState = -1;
    /** 这次寻路用的是哪一端：0=未定 1=绑定表首端 2=绑定表尾端。两端共同决定，只选一个。 */
@@ -1541,6 +1544,23 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             }
          } catch (Throwable t) {
             HexieTrain.LOGGER.warn("[steer] 子系统异常 {}", t.toString());
+         }
+
+         // ===== 逐转向架制动（阶段 4）=====
+         // 转向和制动在 Simurail 里是两张独立的表（setCurrentPath / setRemoteBrakeOverride），
+         // 都拿 worldPosition 当 anchor，互不覆盖。
+         // 注意：遥控制动条目只活 3 拍，BogeyBraking 内部每拍续期。
+         try {
+            BogeyRoster rosterNow = this.roster;
+            if (!this.manualMode && !rosterNow.positions().isEmpty()
+                  && this.settings.get(DispatcherSettings.BOGEY_BRAKE) == 1) {
+               this.bogeyBraking.tick((ServerLevel)this.level, this.worldPosition, rosterNow,
+                  this.outputMapped(SignalChannel.BRAKE));
+            } else {
+               this.bogeyBraking.releaseAll((ServerLevel)this.level, this.worldPosition, rosterNow);
+            }
+         } catch (Throwable t) {
+            HexieTrain.LOGGER.warn("[bbrake] 子系统异常 {}", t.toString());
          }
 
 
@@ -3694,6 +3714,7 @@ public class TrainDispatcherBlockEntity extends SplitShaftBlockEntity implements
             // 切转速：真正驱车的是这个换向器的旋转输出，不是无线红石。不解开它就一直在转。
             DispatcherGearbox.engage(sl, this.worldPosition, DispatcherGearbox.Face.NONE);
             this.steering.releaseAll(sl, this.worldPosition, this.roster);
+            this.bogeyBraking.releaseAll(sl, this.worldPosition, this.roster);
          }
       } catch (Throwable t) {
       }

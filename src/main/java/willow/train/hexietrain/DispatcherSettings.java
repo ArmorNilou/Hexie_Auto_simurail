@@ -67,6 +67,13 @@ public final class DispatcherSettings {
    public static final Entry THROTTLE_MIN = new Entry("ThrottleMin", "节流下限", 0, 15, 0);
    /** 节流阀输出上限。 */
    public static final Entry THROTTLE_MAX = new Entry("ThrottleMax", "节流上限", 0, 15, 15);
+   /**
+    * 转向架制动开关（0 = 关，1 = 开，默认开）。
+    *
+    * <p>开：把调度器的制动指令写进 Simurail 物理转向架（{@link BogeyBraking}）。
+    * 关：清掉遥控制动条目，物理车只听 Create 那边的。
+    */
+   public static final Entry BOGEY_BRAKE = new Entry("BogeyBrake", "转向架制动", 0, 1, 1);
 
    /**
     * <b>往这里加就是加一项设置。</b>
@@ -74,7 +81,8 @@ public final class DispatcherSettings {
     * <p>阶段 2/3 会把它们接进右上角设置栏；阶段 4 会在这里再加一条
     * {@code BogeyBrake}（转向架制动开关）。
     */
-   public static final Entry[] ENTRIES = new Entry[]{BRAKE_MIN, BRAKE_MAX, THROTTLE_MIN, THROTTLE_MAX};
+   public static final Entry[] ENTRIES =
+      new Entry[]{BRAKE_MIN, BRAKE_MAX, THROTTLE_MIN, THROTTLE_MAX, BOGEY_BRAKE};
 
    // ================================================================ 值
 
